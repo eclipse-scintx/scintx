@@ -28,3 +28,18 @@ Please include as much of the information listed below as you can to help us bet
 * Proof-of-concept or exploit code (if possible)
 
 This information will help us triage your report more quickly.
+
+## Exposed Secrets
+
+If a secret (API key, token, credential) is accidentally committed to this
+repository:
+
+1. Do not just delete the file — rotate the secret immediately at its provider.
+2. Report it via the channels above so maintainers can purge the secret from
+   history if warranted and verify it was not used.
+3. Assume any secret pushed to a public branch is compromised and rotate it
+   regardless of how quickly it is removed.
+
+Secret scanning (TruffleHog) runs on every push, pull request, and daily over
+the full history. Push protection and secret scanning alerts are enabled at the
+repository level for supported secret types.

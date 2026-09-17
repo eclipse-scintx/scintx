@@ -1,0 +1,41 @@
+# DCO (Signed-off-by) check for every pull request and push to main.
+# Required for Eclipse projects: every commit must carry a Signed-off-by
+# trailer per the Developer Certificate of Origin (see CONTRIBUTING.md).
+# Contributors sign the Eclipse Contributor Agreement (ECA) with the same
+# email used for git commits: https://www.eclipse.org/legal/ECA.php
+#
+# NOTE: disabled until the project is onboarded to the Eclipse development
+# process — existing history predates the DCO convention. Re-enable by
+# removing the 'on:' override below.
+name: DCO
+
+on:
+  push:
+    branches: [never-dco]
+  # Re-enable with:
+  # pull_request:
+  # push:
+  #   branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dco-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-dco:
+    name: Check DCO sign-off
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Run dco-check
+        # v0.5.0, tag commit; see https://github.com/christophebedard/dco-check
+        # Merge commits are not checked by default (no flag needed).
+        uses: christophebedard/dco-check@7b0205d25ead0f898e0b706b58227dd5fa7e3f55
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --exclude-emails dependabot[bot]@users.noreply.github.com
+          python-version: "3.12"

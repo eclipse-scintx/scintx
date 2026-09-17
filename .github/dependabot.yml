@@ -1,5 +1,12 @@
 version: 2
 updates:
+  # Keep Go module dependencies current (main source of CVE exposure).
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
   # Keep Action pins (commit SHAs) current.
   - package-ecosystem: github-actions
     directory: /

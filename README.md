@@ -1,5 +1,7 @@
 # SCINTX
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/yeeth-security/scintx/badge)](https://scorecard.dev/viewer/?uri=github.com/yeeth-security/scintx)
+
 > **S**upply **C**hain **INT**elligence E**X**change — a vendor-neutral open
 > standard for package-security integration.
 

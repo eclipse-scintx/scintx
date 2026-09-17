@@ -1,0 +1,50 @@
+# OpenSSF Scorecard: automated security posture assessment.
+# Public results: https://scorecard.dev/viewer/?uri=github.com/yeeth-security/scintx
+# Badge in README shows the current posture per the Eclipse Security Handbook
+# Rapid Security Review (CI/CD: Scorecard awareness).
+name: Scorecard
+
+on:
+  push:
+    branches: [main]
+  # Weekly branch-analysis only; default is full analysis.
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      # Needed for the results API (default token) and publishing results.
+      security-events: write
+      # Needed to push the results to the code-scanning dashboard.
+      contents: read
+      actions: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_format: sarif
+          results_file: results.sarif
+          # Publish results to the public Scorecard REST API (repo must be
+          # public, which it is). Required for the README badge.
+          publish_results: true
+
+      - name: Upload SARIF to code scanning
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scorecard-results
+          path: results.sarif
+          if-no-files-found: error

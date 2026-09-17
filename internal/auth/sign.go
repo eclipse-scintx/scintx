@@ -138,7 +138,7 @@ func parseSignatureValue(header string) (string, error) {
 	}
 	rest = strings.TrimSpace(rest)
 	if !strings.HasPrefix(rest, ":") || !strings.HasSuffix(rest, ":") {
-		return "", fmt.Errorf("signature must be :base64:")
+		return "", fmt.Errorf("signature must be :base64:") //nolint:staticcheck // the colons are the contract, not punctuation
 	}
 	return rest[1 : len(rest)-1], nil
 }
@@ -223,11 +223,11 @@ func verifyHMAC(cfg Config, req *http.Request, body []byte) error {
 func verifyBearer(cfg Config, req *http.Request) error {
 	h := req.Header.Get("Authorization")
 	if h == "" {
-		return fmt.Errorf("missing Authorization")
+		return fmt.Errorf("missing Authorization") //nolint:staticcheck // RFC 9421 labels quoted verbatim
 	}
 	const prefix = "Bearer "
 	if !strings.HasPrefix(h, prefix) {
-		return fmt.Errorf("Authorization must be Bearer")
+		return fmt.Errorf("Authorization must be Bearer") //nolint:staticcheck // RFC 9421 labels quoted verbatim
 	}
 	tok := strings.TrimSpace(strings.TrimPrefix(h, prefix))
 	if _, ok := cfg.BearerTokens[tok]; !ok {

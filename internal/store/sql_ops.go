@@ -323,7 +323,7 @@ func (s *SQLStore) GetResultsForSubmission(subID string) ([]*api.ProviderResult,
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []*api.ProviderResult
 	for rows.Next() {
 		var body string
@@ -416,7 +416,7 @@ func (s *SQLStore) Events() ([]api.CloudEvent, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []api.CloudEvent
 	for rows.Next() {
 		var body string
@@ -487,7 +487,7 @@ func (s *SQLStore) Providers() ([]scintx.ProviderEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []scintx.ProviderEntry
 	for rows.Next() {
 		var e scintx.ProviderEntry

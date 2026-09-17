@@ -1,0 +1,45 @@
+# golangci-lint v2 configuration for SCINTX.
+# Run: golangci-lint run ./...
+version: "2"
+
+formatters:
+  enable:
+    - gofmt
+
+linters:
+  default: standard
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - misspell
+    - bodyclose
+    - gosec
+  settings:
+    errcheck:
+      # Ignored function list is in .errcheck-excludes.txt
+      exclude-functions:
+        - (*os.File).Close
+        - (io.Closer).Close
+        - (*sql.Rows).Close
+        - (*encoding/json.Encoder).Encode
+        - (net/http.ResponseWriter).Write
+    gosec:
+      excludes:
+        - G304 # file inclusion via variable: paths come from trusted config/env
+  exclusions:
+    rules:
+      # Tests: unchecked json encode/decode is idiomatic in fixtures.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+      # Generated aggregation files.
+      - path: extensions/.*/all/all\.go
+        linters:
+          - unused
+
+run:
+  timeout: 10m

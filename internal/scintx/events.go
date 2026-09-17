@@ -5,6 +5,7 @@ package scintx
 
 import (
 	"log/slog"
+	"math"
 	"sync/atomic"
 
 	"github.com/yeeth-security/scintx/api"
@@ -33,7 +34,11 @@ func NewEventEmitter(source string, store Store) *EventEmitter {
 // Emit records a CloudEvent with the next sequence number.
 func (e *EventEmitter) Emit(eventType, subject string, data map[string]any) {
 	s := atomic.AddUint64(&e.seq, 1)
-	seq := int(s)
+	if s > math.MaxInt32 { // CloudEvents sequence is int; wrap like TCP ISN after 2^31
+		atomic.StoreUint64(&e.seq, 0)
+		s = atomic.AddUint64(&e.seq, 1)
+	}
+	seq := int(s) //nolint:gosec // G115: bounded to MaxInt32 above, cannot overflow
 	evt := api.CloudEvent{
 		SpecVersion:     "1.0",
 		ID:              "evt_" + api.RandHex(),
