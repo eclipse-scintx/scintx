@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/dgraph-io/ristretto/v2 v2.4.2
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/term v0.45.0
