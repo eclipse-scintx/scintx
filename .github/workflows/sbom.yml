@@ -5,6 +5,11 @@
 name: SBOM
 
 on:
+  # TEMPORARY: run on pull_request so the SBOM job can be exercised and
+  # verified on GitHub before this workflow lands on the default branch.
+  # workflow_dispatch cannot target a branch until the workflow file
+  # exists on the default branch. Remove before merge (SCINTX-144).
+  pull_request:
   release:
     types: [published]
   workflow_dispatch:
@@ -29,9 +34,9 @@ jobs:
   sbom:
     runs-on: ubuntu-latest
     env:
-      # On release events the tag name is the product version;
-      # on manual dispatch the input (default 0.0.0-dev) is used.
-      PRODUCT_VERSION: ${{ inputs.version || github.event.release.tag_name }}
+      # Release tag name on release events; the dispatch input (default
+      # 0.0.0-dev) on manual runs; 0.0.0-dev for other trigger types.
+      PRODUCT_VERSION: ${{ inputs.version || github.event.release.tag_name || '0.0.0-dev' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
