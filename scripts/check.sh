@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Full local CI: fmt check, generate idempotency, vet, tests, schemas.
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# SPDX-License-Identifier: EPL-2.0
+
+# Full local CI: fmt check, license headers, generate idempotency, vet, tests, schemas.
 # Usage: ./scripts/check.sh
 #
 # Set CHECK_GENERATED=1 (CI does) to also fail if generate dirty's the git tree.
@@ -15,6 +19,9 @@ if [[ -n "${unformatted}" ]]; then
   printf '%s\n' "${unformatted}" >&2
   die "gofmt needed on the files above; run ./scripts/fmt.sh"
 fi
+
+log "check: license headers (SPDX-License-Identifier: EPL-2.0)"
+"${SCRIPTS_DIR}/headers.sh"
 
 log "check: generate (idempotent)"
 "${SCRIPTS_DIR}/generate.sh"

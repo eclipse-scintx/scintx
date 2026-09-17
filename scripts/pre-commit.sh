@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# SPDX-License-Identifier: EPL-2.0
+
 # Fast checks intended for git pre-commit (no race detector, no schema python).
 # Usage: ./scripts/pre-commit.sh
 # Invoked automatically when hooks are installed (see ./scripts/install-hooks.sh).
@@ -39,6 +43,9 @@ after2="$(checksum_generated)"
 if [[ "${after}" != "${after2}" ]]; then
   die "go generate is not idempotent"
 fi
+
+log "pre-commit: license headers"
+"${SCRIPTS_DIR}/headers.sh"
 
 "${SCRIPTS_DIR}/vet.sh"
 "${SCRIPTS_DIR}/test.sh"

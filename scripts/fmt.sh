@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# SPDX-License-Identifier: EPL-2.0
+
 # Format Go sources with gofmt (writes files in place).
 # Usage: ./scripts/fmt.sh
 

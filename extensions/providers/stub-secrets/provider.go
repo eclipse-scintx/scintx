@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Contributors to the Eclipse Foundation
+//
+// SPDX-License-Identifier: EPL-2.0
 // Package secretsstub is a stub secrets-detection provider used to verify
 // that the auto-discovery mechanism picks up new extensions without wiring changes.
 package secretsstub

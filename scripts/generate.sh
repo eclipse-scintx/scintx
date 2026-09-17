@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# SPDX-License-Identifier: EPL-2.0
+
 # Regenerate extension aggregation packages (extensions/*/all/all.go).
 # Usage: ./scripts/generate.sh
 

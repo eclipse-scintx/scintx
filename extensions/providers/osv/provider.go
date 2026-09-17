@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Contributors to the Eclipse Foundation
+//
+// SPDX-License-Identifier: EPL-2.0
 // Package osv is a real OSV.dev vulnerability provider.
 //
 // It queries https://api.osv.dev (override with SCINTX_OSV_BASE_URL) using a

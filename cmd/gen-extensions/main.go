@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Contributors to the Eclipse Foundation
+//
+// SPDX-License-Identifier: EPL-2.0
 // Command gen-extensions scans the extensions/ directory and regenerates
 // the all.go aggregation files that import every extension package,
 // triggering their init() registration.

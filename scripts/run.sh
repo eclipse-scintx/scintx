@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# SPDX-License-Identifier: EPL-2.0
+
 # Build (if needed) and run the SCINTX HTTP server.
 # Env: SCINTX_ADDR (default :8080)
 # Usage: ./scripts/run.sh

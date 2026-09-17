@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# SPDX-License-Identifier: EPL-2.0
+
 # Shared helpers for SCINTX dev scripts.
 # Sourced by other scripts — not meant to be run directly.
 

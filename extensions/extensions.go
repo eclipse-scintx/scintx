@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Contributors to the Eclipse Foundation
+//
+// SPDX-License-Identifier: EPL-2.0
 // Package extensions is the root for all SCINTX extensions.
 //
 // Each subdirectory (providers/, policies/) contains extension packages that
