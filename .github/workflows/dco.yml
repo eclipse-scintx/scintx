@@ -25,7 +25,10 @@ jobs:
     steps:
       - name: Run dco-check
         # v0.5.0, tag commit; see https://github.com/christophebedard/dco-check
+        # Merge commits are not checked by default (no flag needed).
         uses: christophebedard/dco-check@7b0205d25ead0f898e0b706b58227dd5fa7e3f55
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          args: --ignore-merge-commits --exclude-author-email 'dependabot\[bot\]@users\.noreply\.github\.com'
+          args: --exclude-emails dependabot[bot]@users.noreply.github.com
           python-version: "3.12"
