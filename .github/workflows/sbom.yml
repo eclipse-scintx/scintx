@@ -1,0 +1,94 @@
+# Generates the CycloneDX SBOM for the scintx-gateway product.
+# Required by the Eclipse Security Handbook: one CycloneDX SBOM per product
+# per release, uploaded to the Eclipse Foundation Dependency-Track instance.
+# See https://eclipse-csi.github.io/.well-known/secure-open-source/sbom
+name: SBOM
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Product version (e.g. v1.2.3)"
+        required: false
+        default: "0.0.0-dev"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sbom-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CYCLONEDX_GOMOD_VERSION: "1.12.0"
+  CYCLONEDX_CLI_VERSION: "0.33.1"
+
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+    env:
+      # On release events the tag name is the product version;
+      # on manual dispatch the input (default 0.0.0-dev) is used.
+      PRODUCT_VERSION: ${{ inputs.version || github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Download cyclonedx-gomod
+        run: |
+          curl -sSfL --retry 3 -o /tmp/cyclonedx-gomod.tar.gz \
+            "https://github.com/CycloneDX/cyclonedx-gomod/releases/download/v${CYCLONEDX_GOMOD_VERSION}/cyclonedx-gomod_${CYCLONEDX_GOMOD_VERSION}_linux_amd64.tar.gz"
+          tar -xzf /tmp/cyclonedx-gomod.tar.gz -C /tmp cyclonedx-gomod
+          sudo install -m 0755 /tmp/cyclonedx-gomod /usr/local/bin/cyclonedx-gomod
+
+      - name: Generate SBOM
+        run: |
+          cyclonedx-gomod mod \
+            -type application \
+            -output-version 1.6 \
+            -json \
+            -output bom.json \
+            .
+          # The "mod" subcommand derives the main component version from git
+          # tags (pseudo-version on untagged HEAD), so stamp the product
+          # version explicitly to match the released artifact.
+          tmp="$(mktemp)"
+          jq --arg v "${PRODUCT_VERSION}" '.metadata.component.version = $v' bom.json > "${tmp}"
+          mv "${tmp}" bom.json
+
+      - name: Validate SBOM
+        run: |
+          # Validate the generated BOM against the CycloneDX 1.6 JSON schema.
+          curl -sSfL --retry 3 -o /usr/local/bin/cyclonedx \
+            "https://github.com/CycloneDX/cyclonedx-cli/releases/download/v${CYCLONEDX_CLI_VERSION}/cyclonedx-linux-x64"
+          chmod +x /usr/local/bin/cyclonedx
+          cyclonedx validate --input-format json --input-file bom.json --fail-on-errors
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-scintx-gateway
+          path: bom.json
+          if-no-files-found: error
+
+      # Uncomment after the EF Security Team grants upload permission
+      # (HelpDesk: service:dependencytrack, team:security).
+      # The step needs OIDC: also uncomment the permissions block below.
+      # - name: Upload SBOM to Eclipse Dependency-Track
+      #   uses: eclipse-csi/workflows/upload-sbom@a5993190de939557abd37e9d7a7ecfee80660876
+      #   with:
+      #     sbom-file: bom.json
+      #     # NOTE: Upload will fail for a non-registered 'product-name'.
+      #     # See https://github.com/eclipse-csi/workflows#upload-sbom for details.
+      #     product-name: "scintx-gateway"
+      #     product-version: ${{ env.PRODUCT_VERSION }}
+      #
+      # permissions:
+      #   id-token: write  # required for OIDC-authenticated SBOM upload
