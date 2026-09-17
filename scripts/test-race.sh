@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# SPDX-License-Identifier: EPL-2.0
+
 # Run tests with the race detector when CGO is available.
 # Falls back to plain tests with a warning on machines without a C compiler
 # (common on Windows Git Bash without gcc).

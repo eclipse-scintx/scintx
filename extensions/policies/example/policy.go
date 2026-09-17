@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Contributors to the Eclipse Foundation
+//
+// SPDX-License-Identifier: EPL-2.0
 // Package examplepolicy is a hard-coded example policy engine.
 //
 // Prefer the YAML engine (extensions/policies/yaml + policies/*.yaml) for real

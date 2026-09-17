@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# SPDX-License-Identifier: EPL-2.0
+
 # Stress-test scalable worker/queue/store paths.
 # Usage:
 #   ./scripts/stress.sh           # scale=1 (CI-friendly)

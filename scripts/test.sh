@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# SPDX-License-Identifier: EPL-2.0
+
 # Run unit + e2e tests (no race detector).
 # Usage: ./scripts/test.sh [go test args...]
 # Example: ./scripts/test.sh ./api/... -count=1

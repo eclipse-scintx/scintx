@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# SPDX-License-Identifier: EPL-2.0
+
 # Point this repo's Git hooks at .githooks/ (tracked in version control).
 # Usage: ./scripts/install-hooks.sh
 #

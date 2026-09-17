@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Contributors to the Eclipse Foundation
+//
+// SPDX-License-Identifier: EPL-2.0
 // Package yamlpolicy evaluates SCINTX submissions against YAML policy documents.
 //
 // Users author policies as files under policies/ (or SCINTX_POLICIES_DIR).
