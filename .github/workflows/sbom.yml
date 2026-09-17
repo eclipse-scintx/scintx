@@ -1,0 +1,135 @@
+# Generates the CycloneDX SBOM for the scintx-gateway product.
+# Required by the Eclipse Security Handbook: one CycloneDX SBOM per product
+# per release, uploaded to the Eclipse Foundation Dependency-Track instance.
+# See https://eclipse-csi.github.io/security-handbook/sbom/howto.html
+name: SBOM
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to generate the SBOM for (e.g. v1.2.3). The exact tag is checked out, so the SBOM always reflects the tagged tree."
+        required: true
+        default: "0.0.0-dev"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sbom-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CYCLONEDX_GOMOD_VERSION: "1.12.0"
+  # SHA-256 digests of the release assets, verified before extraction or
+  # execution. Version-pinning the URL does not pin the bytes; a replaced
+  # upstream asset would otherwise mean code execution in this workflow.
+  CYCLONEDX_GOMOD_SHA256: "004b9f5cc595b797fb5423e2ae4c97bcf0f18c712ed2faee1640b09e5efd6d15" # cyclonedx-gomod_1.12.0_linux_amd64.tar.gz
+  CYCLONEDX_CLI_VERSION: "0.33.1"
+  CYCLONEDX_CLI_SHA256: "bfc8b2538da86fe239bc53658bbb63c1c8c510a293c1e6891aa5bea5d3c58746" # cyclonedx-linux-x64
+
+jobs:
+  sbom:
+    runs-on: ubuntu-24.04
+    env:
+      # Release tag on release events; the exact tag to check out on manual
+      # dispatch. The version is derived from the checked-out Git state, so
+      # the SBOM can never claim a version its source tree doesn't match.
+      SBOM_REF: ${{ github.event.release.tag_name || inputs.version }}
+    steps:
+      - name: Install cyclonedx-gomod
+        # Downloaded before checkout so the generator's version detection
+        # cannot be influenced by repository content.
+        shell: bash
+        run: |
+          file="${RUNNER_TEMP}/cyclonedx-gomod.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 \
+            -o "${file}" \
+            "https://github.com/CycloneDX/cyclonedx-gomod/releases/download/v${CYCLONEDX_GOMOD_VERSION}/cyclonedx-gomod_${CYCLONEDX_GOMOD_VERSION}_linux_amd64.tar.gz"
+          echo "${CYCLONEDX_GOMOD_SHA256}  ${file}" | sha256sum --check -
+          mkdir -p "${RUNNER_TEMP}/bin"
+          tar -xzf "${file}" -C "${RUNNER_TEMP}/bin" cyclonedx-gomod
+          chmod 0755 "${RUNNER_TEMP}/bin/cyclonedx-gomod"
+          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Always check out exactly the release tag: on a release event the
+          # tag the SBOM describes, on manual dispatch the requested tag.
+          # Full history so cyclonedx-gomod can derive the main component
+          # version from Git instead of post-editing the generated BOM.
+          ref: ${{ env.SBOM_REF }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          # No build/module caching: restored cache entries are untrusted
+          # input, and an SBOM generator doesn't benefit enough to justify
+          # the mutable state.
+          cache: false
+
+      - name: Generate SBOM
+        run: |
+          # "app" (not "mod"): the gateway is a single distributed binary, so
+          # the SBOM models what the application actually depends on, with
+          # build constraints evaluated. Build constraints mimic the release
+          # build (scripts/build.sh: plain `go build`, CGO on where
+          # available).
+          GOOS=linux GOARCH=amd64 \
+          cyclonedx-gomod app \
+            -main ./cmd/scintx \
+            -output-version 1.6 \
+            -json \
+            -output bom.json \
+            .
+          # The main component version comes from Git (the release tag is
+          # checked out with full history); no post-generation rewriting.
+
+      - name: Install cyclonedx-cli and validate SBOM
+        run: |
+          file="${RUNNER_TEMP}/bin/cyclonedx"
+          curl --fail --silent --show-error --location --retry 3 \
+            -o "${file}" \
+            "https://github.com/CycloneDX/cyclonedx-cli/releases/download/v${CYCLONEDX_CLI_VERSION}/cyclonedx-linux-x64"
+          echo "${CYCLONEDX_CLI_SHA256}  ${file}" | sha256sum --check -
+          chmod 0755 "${file}"
+          "${file}" validate --input-format json --input-file bom.json --fail-on-errors
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-scintx-gateway
+          path: bom.json
+          if-no-files-found: error
+
+  # Uncomment after the EF Security Team grants upload permission
+  # (HelpDesk: service:dependencytrack, team:security).
+  #
+  # Isolated job: the SBOM generator job above has no OIDC capability; only
+  # this minimal job, which runs no third-party binaries, gets id-token: write.
+  # NOTE: a permissions map replaces the top-level one — contents: read must
+  # be repeated here, unspecified permissions become "none".
+  #
+  # upload:
+  #   needs: sbom
+  #   runs-on: ubuntu-24.04
+  #   permissions:
+  #     contents: read
+  #     id-token: write  # required for OIDC-authenticated SBOM upload
+  #   steps:
+  #     - uses: actions/download-artifact@<vX-sha>
+  #       with:
+  #         name: sbom-scintx-gateway
+  #         path: sbom
+  #     - name: Upload SBOM to Eclipse Dependency-Track
+  #       uses: eclipse-csi/workflows/upload-sbom@a5993190de939557abd37e9d7a7ecfee80660876
+  #       with:
+  #         sbom-file: sbom/bom.json
+  #         # NOTE: Upload will fail for a non-registered 'product-name'.
+  #         # See https://github.com/eclipse-csi/workflows#upload-sbom for details.
+  #         product-name: "scintx-gateway"
+  #         product-version: ${{ github.event.release.tag_name || inputs.version }}
