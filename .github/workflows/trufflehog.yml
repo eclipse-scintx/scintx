@@ -14,7 +14,8 @@ permissions:
 jobs:
   scan-secrets:
     name: Scan secrets
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -25,8 +26,8 @@ jobs:
       - name: TruffleHog OSS
         id: trufflehog
         uses: trufflesecurity/trufflehog@363923b901c911a9164f50b6c423f47c15372b1c # v3.97.4
-        continue-on-error: true
         with:
+          version: "3.97.4"
           path: ./
           # No base/head inputs: the action resolves per-event base..head SHAs
           # itself (PR diff scan, full history scan on schedule). A named
@@ -35,7 +36,3 @@ jobs:
           # so `--since-commit main` fails with "no base refs succeeded"
           # while still exiting 0 (a silent no-op scan).
           extra_args: --results=verified,unknown --exclude-globs vendor/*
-
-      - name: Scan results status
-        if: steps.trufflehog.outcome == 'failure'
-        run: exit 1
