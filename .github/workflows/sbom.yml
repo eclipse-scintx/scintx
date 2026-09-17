@@ -5,10 +5,6 @@
 name: SBOM
 
 on:
-  # TEMPORARY: prove the hardened job end-to-end on GitHub before merge
-  # (workflow_dispatch cannot target a branch until the file exists on the
-  # default branch). Remove before merge. Refs: SCINTX-144
-  pull_request:
   release:
     types: [published]
   workflow_dispatch:
