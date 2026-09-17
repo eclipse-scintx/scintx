@@ -5,11 +5,6 @@
 name: SBOM
 
 on:
-  # TEMPORARY: run on pull_request so the SBOM job can be exercised and
-  # verified on GitHub before this workflow lands on the default branch.
-  # workflow_dispatch cannot target a branch until the workflow file
-  # exists on the default branch. Remove before merge (SCINTX-144).
-  pull_request:
   release:
     types: [published]
   workflow_dispatch:
