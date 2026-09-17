@@ -28,8 +28,13 @@ jobs:
         continue-on-error: true
         with:
           path: ./
-          base: ${{ github.event.repository.default_branch }}
-          extra_args: --results=verified,unknown
+          # No base/head inputs: the action resolves per-event base..head SHAs
+          # itself (PR diff scan, full history scan on schedule). A named
+          # branch base does not resolve: checkout leaves only
+          # refs/remotes/origin/* and trufflehog's temp clone rewrites them,
+          # so `--since-commit main` fails with "no base refs succeeded"
+          # while still exiting 0 (a silent no-op scan).
+          extra_args: --results=verified,unknown --exclude-globs vendor/*
 
       - name: Scan results status
         if: steps.trufflehog.outcome == 'failure'
