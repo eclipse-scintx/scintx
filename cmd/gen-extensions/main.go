@@ -138,7 +138,7 @@ func generate(k extensionKind) error {
 	sort.Strings(pkgs)
 
 	allDir := filepath.Join(k.dir, "all")
-	if err := os.MkdirAll(allDir, 0o755); err != nil {
+	if err := os.MkdirAll(allDir, 0o755); err != nil { //nolint:gosec // G301: group-readable source tree is intentional
 		return err
 	}
 
@@ -165,5 +165,5 @@ func generate(k extensionKind) error {
 	}
 
 	allPath := filepath.Join(allDir, "all.go")
-	return os.WriteFile(allPath, []byte(b.String()), 0o644)
+	return os.WriteFile(allPath, []byte(b.String()), 0o644) //nolint:gosec // G306: world-readable generated Go source
 }

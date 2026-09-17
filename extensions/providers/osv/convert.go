@@ -117,7 +117,6 @@ func severityFromOSV(typ, score string) *api.SeverityObservation {
 	default:
 		if m := reCVSS.FindStringSubmatch(score); len(m) == 2 {
 			version = m[1]
-			typ = "CVSS"
 		} else {
 			return &api.SeverityObservation{
 				Scheme: "OSV", Level: strings.ToLower(score), Source: "provider",

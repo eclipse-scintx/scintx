@@ -211,9 +211,10 @@ func (o *Orchestrator) Process(ctx context.Context, subID string) error {
 			mu.Unlock()
 
 			evtType := "org.eclipse.scintx.provider.result.completed.v1"
-			if res.Execution.Status == api.ExecutionError {
+			switch res.Execution.Status { //nolint:staticcheck // QF1003: if/else is flatter for two of three statuses
+			case api.ExecutionError:
 				evtType = "org.eclipse.scintx.provider.result.error.v1"
-			} else if res.Execution.Status == api.ExecutionTimeout {
+			case api.ExecutionTimeout:
 				evtType = "org.eclipse.scintx.provider.result.timeout.v1"
 			}
 			o.emitter.Emit(evtType, sub.ID, map[string]any{

@@ -30,7 +30,19 @@ jobs:
           python-version: "3.12"
       - name: Schema Python deps
         run: pip install --require-hashes -r scripts/requirements-schemas.txt
+      - name: Install golangci-lint
+        run: |
+          # SHA-256 verified tarball — version-pinned, tag URLs are mutable.
+          curl --fail --silent --show-error --location \
+            "https://github.com/golangci/golangci-lint/releases/download/v2.2.1/golangci-lint-2.2.1-linux-amd64.tar.gz" \
+            -o /tmp/golangci.tgz
+          echo "4098436776a4f4bbef25dcad93f56533003d085f9133e4c69ba3145973d211dc  /tmp/golangci.tgz" | sha256sum --check -
+          mkdir -p /tmp/gcl-bin
+          tar -xzf /tmp/golangci.tgz -C /tmp/gcl-bin --strip-components=1
+          sudo mv /tmp/gcl-bin/golangci-lint /usr/local/bin/
       - name: Check
         run: |
           chmod +x scripts/*.sh
           CHECK_GENERATED=1 ./scripts/check.sh
+      - name: Test coverage
+        run: ./scripts/test-coverage.sh

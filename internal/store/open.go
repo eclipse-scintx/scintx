@@ -69,7 +69,7 @@ var memorySeq atomic.Uint64
 
 func openSQLite(path string) (*SQLStore, error) {
 	if path != ":memory:" {
-		if err := os.MkdirAll(dirOf(path), 0o755); err != nil {
+		if err := os.MkdirAll(dirOf(path), 0o755); err != nil { //nolint:gosec // G301: data dir is operator-configured
 			return nil, fmt.Errorf("sqlite mkdir: %w", err)
 		}
 	}
