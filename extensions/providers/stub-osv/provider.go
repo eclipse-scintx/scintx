@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Contributors to the Eclipse Foundation
+//
+// SPDX-License-Identifier: EPL-2.0
 // Package stubosv is a stub OSV-style vulnerability provider.
 //
 // It is auto-registered via init() when imported. To enable it, import

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Contributors to the Eclipse Foundation
+//
+// SPDX-License-Identifier: EPL-2.0
 // Package credentials stores outbound provider secrets (e.g. OSS Index PAT).
 //
 // Resolution order for humans and CI:

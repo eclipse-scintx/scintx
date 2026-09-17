@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Contributors to the Eclipse Foundation
+//
+// SPDX-License-Identifier: EPL-2.0
 // Package webhook delivers SCINTX CloudEvents to subscriber HTTP endpoints.
 //
 // Delivery uses the CloudEvents structured HTTP binding plus a Content-Digest

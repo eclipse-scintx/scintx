@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Contributors to the Eclipse Foundation
+//
+// SPDX-License-Identifier: EPL-2.0
 // Package ossindex is a Sonatype OSS Index vulnerability provider.
 //
 // It queries the OSS Index / Sonatype Guide component-report API with a

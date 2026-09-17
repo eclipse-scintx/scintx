@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Contributors to the Eclipse Foundation
+//
+// SPDX-License-Identifier: EPL-2.0
 // Package auth implements inbound HTTP authentication for the SCINTX gateway.
 //
 // Profiles (OpenAPI baseline + optional bearer):
