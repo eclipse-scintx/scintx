@@ -9,6 +9,10 @@ webhook lifecycle. The goal is to eliminate duplicated integration work, make
 security verdicts portable, and let registries and enterprises mix-and-match
 providers without vendor lock-in.
 
+SCINTX is being contributed to the Eclipse Foundation. On acceptance,
+the project will be hosted under the Eclipse Foundation and will follow
+the Eclipse Foundation development process.
+
 Proposed for contribution to the Eclipse Foundation as
 **Eclipse Supply Chain Gateway**. A project of
 [Yeeth Security](https://github.com/yeeth-security).

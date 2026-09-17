@@ -1,0 +1,61 @@
+# Third-party dependencies of SCINTX
+#
+# This file lists every third-party Go module dependency and its license.
+# It includes direct dependencies (go.mod) and transitive dependencies.
+#
+# Regenerate with:
+#
+#   go install github.com/google/go-licenses@latest
+#   go-licenses report ./... --ignore github.com/yeeth-security/scintx \
+#     | sort
+#
+# Modules that `go-licenses` cannot classify (build-tag-constrained platforms)
+# were inspected by hand. See the comment block at the end of this file.
+#
+# All listed licenses are, to the best of our knowledge, EPL-2.0-compatible
+# (MIT, BSD, Apache-2.0). No GPL, AGPL, or LGPL dependencies were found.
+
+github.com/cespare/xxhash/v2 v2.3.0 | MIT
+github.com/danieljoos/wincred v1.2.3 | MIT
+github.com/dgraph-io/ristretto/v2 v2.4.2 | Apache-2.0
+github.com/dustin/go-humanize v1.0.1 | MIT
+github.com/godbus/dbus/v5 v5.2.2 | BSD-2-Clause
+github.com/google/uuid v1.6.0 | BSD-3-Clause
+github.com/jackc/pgpassfile v1.0.0 | MIT
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 | MIT
+github.com/jackc/pgx/v5 v5.10.0 | MIT
+github.com/jackc/puddle/v2 v2.2.2 | MIT
+github.com/kr/text v0.2.0 | MIT
+github.com/mattn/go-isatty v0.0.24 | MIT
+github.com/ncruces/go-strftime v1.0.0 | MIT
+github.com/redis/go-redis/v9 v9.22.0 | BSD-2-Clause
+github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec | BSD-3-Clause
+github.com/rogpeppe/go-internal v1.16.0 | BSD-3-Clause
+github.com/stretchr/testify v1.11.1 | MIT
+github.com/zalando/go-keyring v0.2.8 | MIT
+go.uber.org/atomic v1.11.0 | MIT
+golang.org/x/sync v0.21.0 | BSD-3-Clause
+golang.org/x/sys v0.47.0 | BSD-3-Clause
+golang.org/x/term v0.45.0 | BSD-3-Clause
+golang.org/x/text v0.29.0 | BSD-3-Clause
+gopkg.in/yaml.v3 v3.0.1 | MIT
+modernc.org/libc v1.74.4 | MIT
+modernc.org/mathutil v1.7.1 | BSD-3-Clause
+modernc.org/memory v1.11.0 | BSD-3-Clause
+modernc.org/sqlite v1.56.0 | BSD-3-Clause
+
+# Notes:
+#
+# - `go-licenses` reports `modernc.org/mathutil` as "Unknown". The module
+#   ships a BSD-3-Clause LICENSE file (Copyright (c) 2014 The mathutil
+#   Authors). It was verified by hand from the module cache.
+# - `github.com/stretchr/testify` appears in `go mod graph` only as a
+#   test dependency of other modules. go-licenses resolves it to v1.11.1
+#   (selected version). It is MIT.
+# - `github.com/danieljoos/wincred`, `github.com/kr/text`,
+#   `github.com/mattn/go-isatty`, `github.com/ncruces/go-strftime`,
+#   `github.com/rogpeppe/go-internal` are platform- or
+#   build-tag-constrained. go-licenses omits them. Their licenses
+#   (all MIT or BSD) were verified by hand from the module cache.
+# - The SQLite amalgamation inside modernc.org/sqlite is public domain.
+#   The modernc.org/sqlite module wrapper is BSD-3-Clause.
