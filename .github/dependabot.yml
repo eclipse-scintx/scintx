@@ -5,8 +5,12 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
   # Keep hashed schema Python deps current.
   - package-ecosystem: pip
     directory: /scripts
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
