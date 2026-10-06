@@ -1,23 +1,15 @@
-# SCINTX
+# Eclipse SCINTX
 
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/yeeth-security/scintx/badge)](https://scorecard.dev/viewer/?uri=github.com/yeeth-security/scintx)
 
 > **S**upply **C**hain **INT**elligence E**X**change — a vendor-neutral open
 > standard for package-security integration.
 
-SCINTX sits between package registries and security providers, defining a
+Eclipse SCINTX sits between package registries and security providers, defining a
 common submission API, normalized verdict vocabulary, policy engine, and signed
 webhook lifecycle. The goal is to eliminate duplicated integration work, make
 security verdicts portable, and let registries and enterprises mix-and-match
 providers without vendor lock-in.
-
-SCINTX is being contributed to the Eclipse Foundation. On acceptance,
-the project will be hosted under the Eclipse Foundation and will follow
-the Eclipse Foundation development process.
-
-Proposed for contribution to the Eclipse Foundation as
-**Eclipse Supply Chain Gateway**. A project of
-[Yeeth Security](https://github.com/yeeth-security).
 
 ---
 
@@ -31,7 +23,7 @@ integrations with individual vendors, with no shared data model and no
 portability: a verdict from one provider cannot be compared with, substituted
 for, or combined with a verdict from another.
 
-SCINTX breaks that pattern by defining a vendor-neutral integration layer —
+Eclipse SCINTX breaks that pattern by defining a vendor-neutral integration layer —
 normalizing provider output into a common verdict model and giving registries
 and organizations a single policy surface that works across any conforming
 provider. A verdict becomes portable, a policy becomes auditable, and a
@@ -119,5 +111,3 @@ Changes: [CHANGELOG.md](CHANGELOG.md).
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reference gateway
 design (ASD-STE100 style, with diagrams). Extensions:
 [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
-
-A project of [Yeeth Security](https://github.com/yeeth-security).
