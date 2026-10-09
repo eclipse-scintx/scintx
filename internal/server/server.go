@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -100,6 +101,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/providers", s.listProviders)
 	mux.HandleFunc("GET /v1/providers/{id}/capabilities", s.getProviderCapabilities)
 	mux.HandleFunc("POST /v1/artifacts", s.uploadArtifact)
+	// from-url: gateway pulls bytes (outbound) so Cloud Run callers can avoid
+	// the hard 32 MiB ingress body limit when the object already lives in GCS.
+	mux.HandleFunc("POST /v1/artifacts/from-url", s.uploadArtifactFromURL)
 	mux.HandleFunc("HEAD /v1/artifacts/{digest}", s.checkArtifact)
 	mux.HandleFunc("GET /v1/artifacts/{digest}", s.getArtifact)
 	mux.HandleFunc("GET /v1/.well-known/scintx", s.wellKnown)
@@ -525,20 +529,111 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, 400, "invalid_request", "failed to read artifact body: "+err.Error())
 		return
 	}
+	s.writeStoredArtifact(w, body, r.Header.Get("Content-Type"))
+}
+
+// uploadArtifactFromURLRequest is the JSON body for POST /v1/artifacts/from-url.
+type uploadArtifactFromURLRequest struct {
+	URL         string `json:"url"`
+	ContentType string `json:"content_type,omitempty"`
+}
+
+// allowedArtifactFetchHost returns true when the URL host is a trusted object
+// store. SSRF guard — we never fetch arbitrary user-controlled hosts.
+func allowedArtifactFetchHost(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	switch h {
+	case "storage.googleapis.com",
+		"storage.cloud.google.com":
+		return true
+	default:
+		// Virtual-hosted-style GCS: <bucket>.storage.googleapis.com
+		return strings.HasSuffix(h, ".storage.googleapis.com")
+	}
+}
+
+// uploadArtifactFromURL fetches artifact bytes from a short-lived signed URL
+// (typically GCS) and stores them like POST /v1/artifacts. Outbound fetch bypasses
+// Cloud Run's 32 MiB request-body limit on the caller → gateway hop.
+func (s *Server) uploadArtifactFromURL(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
+	var req uploadArtifactFromURLRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeProblem(w, 400, "invalid_request", "invalid JSON body")
+		return
+	}
+	rawURL := strings.TrimSpace(req.URL)
+	if rawURL == "" {
+		writeProblem(w, 400, "invalid_request", "url is required")
+		return
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		writeProblem(w, 400, "invalid_request", "url must be an https URL")
+		return
+	}
+	if !allowedArtifactFetchHost(u.Host) {
+		writeProblem(w, 400, "invalid_request", "url host is not an allowed object store")
+		return
+	}
+
+	limit := maxArtifactBodyBytes()
+	client := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := client.Get(rawURL)
+	if err != nil {
+		writeProblem(w, 502, "fetch_failed", "failed to fetch artifact URL: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		writeProblem(w, 502, "fetch_failed",
+			fmt.Sprintf("artifact URL returned status %d", resp.StatusCode))
+		return
+	}
+
+	// Stream into a capped buffer so a huge object cannot exhaust memory.
+	limited := io.LimitReader(resp.Body, limit+1)
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		writeProblem(w, 502, "fetch_failed", "failed to read artifact URL body: "+err.Error())
+		return
+	}
+	if int64(len(body)) > limit {
+		writeProblem(w, http.StatusRequestEntityTooLarge, "artifact_too_large",
+			fmt.Sprintf("artifact exceeds max size of %d bytes", limit))
+		return
+	}
+
+	mediaType := strings.TrimSpace(req.ContentType)
+	if mediaType == "" {
+		mediaType = resp.Header.Get("Content-Type")
+	}
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	s.writeStoredArtifact(w, body, mediaType)
+}
+
+// writeStoredArtifact hashes, persists, and returns the standard artifact_ref envelope.
+func (s *Server) writeStoredArtifact(w http.ResponseWriter, body []byte, mediaType string) {
 	h := sha256.Sum256(body)
-	digest := "sha256:" + hex.EncodeToString(h[:])
+	digestHex := hex.EncodeToString(h[:])
+	digest := "sha256:" + digestHex
 	if err := s.store.PutArtifact(digest, body); err != nil {
 		writeProblem(w, 500, "store_error", err.Error())
 		return
 	}
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
 	ref := api.ResourceReference{
 		URI:       api.BlobURN(digest),
-		MediaType: r.Header.Get("Content-Type"),
-		Digests:   map[string]string{"sha256": hex.EncodeToString(h[:])},
+		MediaType: mediaType,
+		Digests:   map[string]string{"sha256": digestHex},
 	}
 	writeJSON(w, 201, map[string]any{
 		"artifact_ref": api.ArtifactRef{
-			Digests:    map[string]string{"sha256": hex.EncodeToString(h[:])},
+			Digests:    map[string]string{"sha256": digestHex},
 			ContentRef: &ref,
 		},
 	})
@@ -593,6 +688,7 @@ func (s *Server) wellKnown(w http.ResponseWriter, r *http.Request) {
 			"/v1/decisions",
 			"/v1/providers",
 			"/v1/artifacts",
+			"/v1/artifacts/from-url",
 			"/v1/events",
 		},
 		"auth_profiles": profiles,

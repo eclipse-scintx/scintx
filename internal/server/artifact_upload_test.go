@@ -51,6 +51,33 @@ func TestUploadArtifactOK(t *testing.T) {
 	}
 }
 
+func TestUploadArtifactFromURLRejectsBadHost(t *testing.T) {
+	st := scintx.NewMemoryStore()
+	srv := New(st, nil, nil, nil)
+
+	body := []byte(`{"url":"https://evil.example/payload.bin"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/artifacts/from-url", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAllowedArtifactFetchHost(t *testing.T) {
+	if !allowedArtifactFetchHost("storage.googleapis.com") {
+		t.Fatal("expected storage.googleapis.com allowed")
+	}
+	if !allowedArtifactFetchHost("my-bucket.storage.googleapis.com") {
+		t.Fatal("expected virtual-hosted GCS allowed")
+	}
+	if allowedArtifactFetchHost("evil.example") {
+		t.Fatal("expected evil.example denied")
+	}
+}
+
 func TestMaxArtifactBodyBytesDefault(t *testing.T) {
 	os.Unsetenv("SCINTX_MAX_ARTIFACT_BYTES")
 	if got := maxArtifactBodyBytes(); got != defaultMaxArtifactBody {
