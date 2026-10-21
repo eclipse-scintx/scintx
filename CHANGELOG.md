@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI (`make check`) and GitHub Actions workflows.
 - EPL-2.0 license.
 
+### Security
+
+- Require Go 1.26.10 (was 1.26.0) to pick up the fix for the compromised
+  eMudhra intermediate CA keys (Oct 2026). CI reads the version from `go.mod`.
+
 ### Changed
 
 - Artifact upload limit raised from 32 MiB to 1 GiB (override via `SCINTX_MAX_ARTIFACT_BYTES`).
