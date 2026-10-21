@@ -1,6 +1,9 @@
 module github.com/yeeth-security/scintx
 
-go 1.26.0
+// Security: 1.26.10 is a patched Go release for the compromised eMudhra
+// intermediate CAs (Oct 2026). CI and the SBOM job read this line
+// (go-version-file), so they now build with the fixed toolchain too.
+go 1.26.10
 
 require (
 	github.com/dgraph-io/ristretto/v2 v2.4.2

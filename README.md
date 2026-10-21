@@ -54,7 +54,7 @@ registry can swap or mix providers without rewriting its integration.
 
 ## Quickstart
 
-Requires [Go 1.25+](https://go.dev/dl/).
+Requires [Go 1.26.10+](https://go.dev/dl/) (earlier versions lack the eMudhra CA distrust fix).
 
 ```bash
 git clone https://github.com/yeeth-security/scintx.git
