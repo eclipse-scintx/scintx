@@ -1,0 +1,95 @@
+name: Provider adapter request
+description: Ask maintainers to evaluate a supply-chain security provider for an in-tree adapter.
+title: "adapter: "
+labels: ["provider-adapter"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Request an in-tree adapter for a supply-chain security product. Adapters are Go packages under `extensions/providers/`. See [docs/EXTENSIONS.md](https://github.com/eclipse-scintx/scintx/blob/main/docs/EXTENSIONS.md).
+
+        Answer the questions below. Maintainers will follow up for anything else they need. Leave out secrets, customer data, and non-public findings.
+
+  - type: input
+    id: product
+    attributes:
+      label: Product
+      description: Product name and vendor.
+      placeholder: Example Scanner (Example Corp)
+    validations:
+      required: true
+
+  - type: input
+    id: docs
+    attributes:
+      label: Documentation URL
+      description: Public API, CLI, or feed docs a maintainer can read without an NDA.
+    validations:
+      required: true
+
+  - type: input
+    id: contact
+    attributes:
+      label: Contact
+      description: GitHub handle or email for follow-up.
+      placeholder: "@octocat"
+    validations:
+      required: true
+
+  - type: textarea
+    id: integration
+    attributes:
+      label: How would an adapter call you?
+      description: |
+        Hosted API, on-prem service, local binary, SDK, or data feed. Include auth, whether the call returns immediately or runs as a job, and typical latency for one package.
+      placeholder: |
+        Synchronous HTTPS API. One gateway token. A purl lookup returns in under a second.
+    validations:
+      required: true
+
+  - type: textarea
+    id: assessment
+    attributes:
+      label: What do you assess, and what do you need?
+      description: |
+        Capabilities (vulnerability, malware, secret, license), required inputs (purl, digest, package bytes, SBOM), and ecosystems. Note how findings are identified and scored.
+    validations:
+      required: true
+
+  - type: textarea
+    id: history
+    attributes:
+      label: What is the public history of your findings?
+      description: |
+        When you started publishing them, whether they are your own research or an aggregation, and a link to a corpus, advisory feed, or write-up. Say whether a caller can query a specific package version.
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        An adapter merged into SCINTX is project source. SCINTX cannot merge:
+
+        - Code that cannot be contributed under the [EPL-2.0](https://www.eclipse.org/legal/epl-2.0/).
+        - A vendor binary, data feed, or proprietary SDK committed to the repository.
+        - A dependency whose license cannot be distributed with an EPL-2.0 project.
+        - Secrets, customer data, or non-public findings.
+
+        Contributors must sign the [Eclipse Contributor Agreement](https://www.eclipse.org/legal/ECA.php) and sign off each commit. See [CONTRIBUTING.md](https://github.com/eclipse-scintx/scintx/blob/main/CONTRIBUTING.md).
+
+  - type: textarea
+    id: license
+    attributes:
+      label: Provider license and known limitations
+      description: |
+        Write the license or terms for the provider itself (the API, binary, feed, or data). Note any known limitations those terms create for an adapter merged into SCINTX.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: Acknowledgements
+      options:
+        - label: This report contains no secrets, customer data, or non-public findings.
+          required: true
