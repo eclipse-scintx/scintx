@@ -12,6 +12,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/yeeth-security/scintx/api"
@@ -28,12 +30,16 @@ type Config struct {
 	Revision string `yaml:"-" json:"-"`
 }
 
-// GatewaySettings configures HTTP server and submission limits.
+// GatewaySettings configures HTTP server, worker concurrency, and submission limits.
 type GatewaySettings struct {
 	InstanceID      string `yaml:"instanceId" json:"instanceId"`
 	Version         string `yaml:"version" json:"version"`
 	ListenAddr      string `yaml:"listenAddr" json:"listenAddr"`
 	MaxContentBytes int64  `yaml:"maxContentBytes" json:"maxContentBytes"`
+	// Workers sets the number of concurrent background worker goroutines that
+	// claim and execute submissions in parallel. This allows fast HTTP tasks to
+	// proceed alongside multi-minute local binary analyses without head-of-line blocking.
+	Workers int `yaml:"workers" json:"workers"`
 }
 
 // StorageSettings configures persistent submission storage (SQLite or PostgreSQL).
@@ -48,6 +54,18 @@ type AuthSettings struct {
 	BearerToken string `yaml:"-" json:"-"`
 }
 
+// DefaultWorkers returns a sensible default worker pool size based on CPU count.
+func DefaultWorkers() int {
+	n := runtime.NumCPU()
+	if n < 4 {
+		return 4
+	}
+	if n > 16 {
+		return 16
+	}
+	return n
+}
+
 // Default returns the built-in default gateway configuration.
 func Default() *Config {
 	return &Config{
@@ -56,6 +74,7 @@ func Default() *Config {
 			Version:         "0.1.0",
 			ListenAddr:      ":8080",
 			MaxContentBytes: api.DefaultMaxContentBytes,
+			Workers:         DefaultWorkers(),
 		},
 		Storage: StorageSettings{
 			DSN: "file:data/scintx.db",
@@ -68,9 +87,6 @@ func Default() *Config {
 //  1. Environment variables / *_FILE secret files (highest precedence)
 //  2. Gateway configuration file (gateway.yaml)
 //  3. Built-in defaults (lowest precedence)
-//
-// Load fails closed if the config file contains unknown YAML fields, if a
-// configured *_FILE secret is unreadable or empty, or if validation fails.
 func Load(path string) (*Config, error) {
 	cfg := Default()
 
@@ -108,6 +124,13 @@ func applyEnvOverrides(cfg *Config) error {
 	if v := strings.TrimSpace(os.Getenv("SCINTX_INSTANCE_ID")); v != "" {
 		cfg.Gateway.InstanceID = v
 	}
+	if v := strings.TrimSpace(os.Getenv("SCINTX_WORKERS")); v != "" {
+		workers, err := strconv.Atoi(v)
+		if err != nil || workers <= 0 {
+			return fmt.Errorf("invalid SCINTX_WORKERS %q: must be a positive integer", v)
+		}
+		cfg.Gateway.Workers = workers
+	}
 
 	dbDSN, err := resolveSecret("SCINTX_DATABASE_URL")
 	if err != nil {
@@ -127,9 +150,6 @@ func applyEnvOverrides(cfg *Config) error {
 	return nil
 }
 
-// resolveSecret reads <ENV_NAME>_FILE if set, or falls back to <ENV_NAME>.
-// If <ENV_NAME>_FILE is explicitly configured, it fails closed when the file
-// cannot be read or contains only whitespace.
 func resolveSecret(envName string) (string, error) {
 	fileEnv := envName + "_FILE"
 	if filePath := strings.TrimSpace(os.Getenv(fileEnv)); filePath != "" {
@@ -159,6 +179,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.MaxContentBytes <= 0 {
 		return fmt.Errorf("gateway.maxContentBytes must be positive")
+	}
+	if c.Gateway.Workers <= 0 {
+		return fmt.Errorf("gateway.workers must be positive")
 	}
 	if strings.TrimSpace(c.Storage.DSN) == "" {
 		return fmt.Errorf("storage.dsn is required")

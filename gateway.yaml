@@ -8,6 +8,8 @@ gateway:
   version: "0.1.0"
   listenAddr: ":8080"
   maxContentBytes: 67108864
+  # Concurrent background workers for parallel short HTTP and long binary tasks.
+  workers: 4
 
 storage:
   # Persistent SQLite file by default; also accepts "postgres://..." or "memory".

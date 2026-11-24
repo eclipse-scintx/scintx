@@ -18,24 +18,29 @@ import (
 	"github.com/yeeth-security/scintx/api"
 )
 
-// DefaultLeaseDuration is the time window a worker holds a claim on a
-// running submission before another worker (or a restarted gateway) can
-// automatically re-claim it if heartbeats stop.
+// DefaultLeaseDuration is the short time window a worker holds a claim on a
+// running submission. Active workers renew this lease every DefaultLeaseDuration/3
+// so multi-minute tasks stay owned while crashed containers recover within 30s.
 const DefaultLeaseDuration = 30 * time.Second
 
 // DefaultMaxAttempts is the maximum number of execution claims allowed for a
-// submission before it transitions to terminal "failed" state. This prevents
-// infinite crash loops when a submission repeatedly triggers a crash.
+// submission before it transitions to terminal "failed" state.
 const DefaultMaxAttempts = 3
 
 // DefaultMaxExecutionDuration bounds the total wall-clock time of a single
-// submission execution attempt. Even if heartbeats are running, a hung task
-// cannot renew its lease forever and will be canceled once this limit elapses.
-const DefaultMaxExecutionDuration = 5 * time.Minute
+// submission execution attempt (15 minutes). This accommodates both fast remote
+// HTTP polling tasks and multi-minute local binary analysis processes while
+// still terminating hung tasks.
+const DefaultMaxExecutionDuration = 15 * time.Minute
 
 // ErrStaleAttempt is returned when a worker attempts to renew a lease or write
 // results for a submission whose attempt counter has moved on (fencing token).
 var ErrStaleAttempt = errors.New("stale submission attempt fenced")
+
+// ErrRetryable wraps transient adapter errors (such as HTTP 429/503 or temporary
+// subprocess resource failures) so the worker releases the lease and retries up
+// to maxAttempts instead of failing permanently on the first attempt.
+var ErrRetryable = errors.New("retryable submission execution error")
 
 // Store abstracts submission persistence and lease-based work claiming across
 // SQLite, PostgreSQL, and in-memory backends.
@@ -47,13 +52,11 @@ type Store interface {
 	// status is "accepted" or "running" with an expired (or unset) lease.
 	ClaimNextSubmission(ctx context.Context, now time.Time, leaseDuration time.Duration, maxAttempts int) (api.Submission, bool, error)
 	// RenewLease extends the lease_until timestamp for an in-flight "running"
-	// submission owned by the given attempt number. Returns ErrStaleAttempt if
-	// the submission is no longer in "running" state at that attempt.
+	// submission owned by the given attempt number.
 	RenewLease(ctx context.Context, id string, attempt int, now time.Time, leaseDuration time.Duration) error
 	// ReleaseLease clears the active lease_until timestamp for an in-flight
-	// "running" submission when a worker is interrupted by graceful shutdown.
-	// This allows the next gateway instance to claim the submission immediately
-	// without waiting for the lease duration to expire.
+	// "running" submission when a worker is interrupted by shutdown or encounters
+	// a transient ErrRetryable failure.
 	ReleaseLease(ctx context.Context, id string, attempt int) error
 	// GetSubmission retrieves a submission by ID.
 	GetSubmission(ctx context.Context, id string) (api.Submission, bool, error)

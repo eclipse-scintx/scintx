@@ -15,10 +15,10 @@ import (
 	"github.com/yeeth-security/scintx/api"
 )
 
-// ClaimNextSubmission atomically claims the oldest submission in "accepted" or
-// "running" state whose lease is unset or expired (lease_until <= now).
-// If the candidate has already reached maxAttempts, it is transitioned to
-// terminal "failed" state inside the transaction so scans never get stuck.
+// ClaimNextSubmission atomically claims the next eligible submission in
+// "accepted" or "running" state whose lease is unset or expired (lease_until <= now).
+// Fresh submissions (lower attempts) are prioritized ahead of retries so
+// transient retries never head-of-line block new submissions.
 func (s *SQLStore) ClaimNextSubmission(ctx context.Context, now time.Time, leaseDuration time.Duration, maxAttempts int) (api.Submission, bool, error) {
 	if maxAttempts <= 0 {
 		maxAttempts = DefaultMaxAttempts
@@ -67,8 +67,8 @@ func (s *SQLStore) RenewLease(ctx context.Context, id string, attempt int, now t
 }
 
 // ReleaseLease clears lease_until for an active "running" submission owned by
-// the given attempt number when a worker is interrupted by graceful shutdown.
-// This allows the next gateway instance to claim the submission immediately.
+// the given attempt number when a worker is interrupted by graceful shutdown or
+// encounters a retryable transient failure.
 func (s *SQLStore) ReleaseLease(ctx context.Context, id string, attempt int) error {
 	query := `UPDATE submissions SET lease_until = '' WHERE id = ? AND status = 'running' AND attempts = ?`
 	if s.postgres {
@@ -99,13 +99,13 @@ func (s *SQLStore) claimOneCandidate(ctx context.Context, nowUTC time.Time, nowS
 	findQuery := `
 SELECT payload_json, attempts FROM submissions
 WHERE status IN ('accepted', 'running') AND (lease_until = '' OR lease_until <= ?)
-ORDER BY accepted_at ASC
+ORDER BY attempts ASC, accepted_at ASC
 LIMIT 1`
 	if s.postgres {
 		findQuery = `
 SELECT payload_json, attempts FROM submissions
 WHERE status IN ('accepted', 'running') AND (lease_until = '' OR lease_until <= $1)
-ORDER BY accepted_at ASC
+ORDER BY attempts ASC, accepted_at ASC
 LIMIT 1
 FOR UPDATE SKIP LOCKED`
 	}
@@ -170,7 +170,6 @@ FOR UPDATE SKIP LOCKED`
 		return api.Submission{}, false, false, err
 	}
 	if rows == 0 {
-		// Another worker claimed the candidate first; treat as exhausted/retry loop.
 		return api.Submission{}, true, true, nil
 	}
 	if err := tx.Commit(); err != nil {

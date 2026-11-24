@@ -19,22 +19,26 @@ type memoryEntry struct {
 }
 
 // MemoryStore provides thread-safe in-memory storage with lease-based claiming,
-// deterministic FIFO ordering, and attempt fencing.
+// an active pending index (avoiding O(N) scans over completed history), and
+// attempt fencing.
 type MemoryStore struct {
 	mu          sync.RWMutex
 	submissions map[string]memoryEntry
+	// pending tracks only non-terminal ("accepted" and "running") submission IDs
+	// so ClaimNextSubmission stays fast regardless of total completed history.
+	pending map[string]struct{}
 }
 
 // NewMemoryStore creates a new in-memory gateway store.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		submissions: make(map[string]memoryEntry),
+		pending:     make(map[string]struct{}),
 	}
 }
 
 // PutSubmission stores a new submission or updates an existing record in memory.
-// It enforces the submission state machine and attempt fencing token so new
-// submissions cannot overwrite existing IDs and stale attempts are rejected.
+// It enforces the submission state machine and attempt fencing token.
 func (s *MemoryStore) PutSubmission(_ context.Context, sub api.Submission) error {
 	if !sub.Status.IsValid() {
 		return fmt.Errorf("invalid submission status %q", sub.Status)
@@ -57,11 +61,17 @@ func (s *MemoryStore) PutSubmission(_ context.Context, sub api.Submission) error
 		lease = prev.leaseUntil
 	}
 	s.submissions[sub.ID] = memoryEntry{sub: sub, leaseUntil: lease}
+	if sub.Status.IsTerminal() {
+		delete(s.pending, sub.ID)
+	} else {
+		s.pending[sub.ID] = struct{}{}
+	}
 	return nil
 }
 
-// ClaimNextSubmission atomically claims the oldest eligible "accepted" or
-// lease-expired "running" submission in memory, ordered by AcceptedAt.
+// ClaimNextSubmission atomically claims the next eligible submission from the
+// active pending set. Fresh submissions (fewer attempts) are prioritized ahead
+// of retries, and ties are broken by AcceptedAt FIFO order.
 func (s *MemoryStore) ClaimNextSubmission(_ context.Context, now time.Time, leaseDuration time.Duration, maxAttempts int) (api.Submission, bool, error) {
 	if maxAttempts <= 0 {
 		maxAttempts = DefaultMaxAttempts
@@ -76,16 +86,16 @@ func (s *MemoryStore) ClaimNextSubmission(_ context.Context, now time.Time, leas
 			bestEntry memoryEntry
 			found     bool
 		)
-		// Select the oldest claimable submission by AcceptedAt timestamp.
-		for id, entry := range s.submissions {
-			if entry.sub.Status.IsTerminal() {
+		for id := range s.pending {
+			entry, ok := s.submissions[id]
+			if !ok || entry.sub.Status.IsTerminal() {
+				delete(s.pending, id)
 				continue
 			}
 			if !entry.leaseUntil.IsZero() && entry.leaseUntil.After(nowUTC) {
 				continue
 			}
-			if !found || entry.sub.AcceptedAt.Before(bestEntry.sub.AcceptedAt) ||
-				(entry.sub.AcceptedAt.Equal(bestEntry.sub.AcceptedAt) && id < bestID) {
+			if !found || isHigherPriorityCandidate(entry.sub, id, bestEntry.sub, bestID) {
 				bestID = id
 				bestEntry = entry
 				found = true
@@ -102,6 +112,7 @@ func (s *MemoryStore) ClaimNextSubmission(_ context.Context, now time.Time, leas
 				return api.Submission{}, false, err
 			}
 			s.submissions[bestID] = memoryEntry{sub: sub}
+			delete(s.pending, bestID)
 			continue
 		}
 
@@ -117,6 +128,16 @@ func (s *MemoryStore) ClaimNextSubmission(_ context.Context, now time.Time, leas
 	}
 }
 
+func isHigherPriorityCandidate(a api.Submission, aID string, b api.Submission, bID string) bool {
+	if a.Attempts != b.Attempts {
+		return a.Attempts < b.Attempts
+	}
+	if !a.AcceptedAt.Equal(b.AcceptedAt) {
+		return a.AcceptedAt.Before(b.AcceptedAt)
+	}
+	return aID < bID
+}
+
 // RenewLease extends the lease for an active attempt in memory.
 func (s *MemoryStore) RenewLease(_ context.Context, id string, attempt int, now time.Time, leaseDuration time.Duration) error {
 	s.mu.Lock()
@@ -130,8 +151,7 @@ func (s *MemoryStore) RenewLease(_ context.Context, id string, attempt int, now 
 	return nil
 }
 
-// ReleaseLease clears the active lease for an interrupted attempt in memory so
-// another worker can immediately claim the submission without waiting.
+// ReleaseLease clears the active lease for an interrupted or retryable attempt.
 func (s *MemoryStore) ReleaseLease(_ context.Context, id string, attempt int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -153,11 +173,7 @@ func (s *MemoryStore) GetSubmission(_ context.Context, id string) (api.Submissio
 }
 
 // Ping always succeeds for an in-memory store.
-func (s *MemoryStore) Ping(_ context.Context) error {
-	return nil
-}
+func (s *MemoryStore) Ping(_ context.Context) error { return nil }
 
 // Close is a no-op for an in-memory store.
-func (s *MemoryStore) Close() error {
-	return nil
-}
+func (s *MemoryStore) Close() error { return nil }

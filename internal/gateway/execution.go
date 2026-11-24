@@ -18,7 +18,7 @@ import (
 // ExecuteClaimedSubmission runs a claimed submission under a bounded per-attempt
 // timeout while periodically renewing its lease every leaseDuration/3.
 //
-// Three cancellation cases are handled explicitly:
+// Four cancellation and error cases are handled explicitly:
 //  1. Lease lost or fenced (ErrStaleAttempt or local leaseDeadline expired):
 //     abort immediately without touching storage.
 //  2. Parent context canceled (graceful shutdown timeout):
@@ -26,6 +26,8 @@ import (
 //     claim the submission with zero wait delay.
 //  3. Per-attempt execution timeout exceeded (maxExecutionDuration):
 //     fail closed by transitioning the submission to "failed".
+//  4. Transient retryable error (ErrRetryable) with remaining attempts:
+//     release the active lease and wake a worker to retry up to maxAttempts.
 func (o *Orchestrator) ExecuteClaimedSubmission(ctx context.Context, sub api.Submission) {
 	maxDur := o.maxExecutionDuration
 	if maxDur <= 0 {
@@ -61,6 +63,14 @@ func (o *Orchestrator) ExecuteClaimedSubmission(ctx context.Context, sub api.Sub
 		return
 	}
 	if hookErr != nil {
+		// If the adapter returned a transient retryable error and we have not
+		// exhausted maxAttempts, release the lease so the job retries cleanly.
+		if errors.Is(hookErr, ErrRetryable) && sub.Attempts < o.maxAttempts {
+			if err := o.store.ReleaseLease(context.Background(), sub.ID, sub.Attempts); err == nil {
+				o.signalWake()
+				return
+			}
+		}
 		o.failSubmission(ctx, &sub, hookErr.Error())
 		return
 	}
@@ -78,9 +88,9 @@ func (o *Orchestrator) ExecuteClaimedSubmission(ctx context.Context, sub api.Sub
 }
 
 // startLeaseHeartbeat renews the submission lease every leaseDuration/3 and
-// tracks a local leaseDeadline. If the database becomes unreachable and the
-// local leaseDeadline passes without a successful renewal, it sets leaseLost
-// and cancels execCtx immediately (preventing split-brain execution).
+// tracks a local leaseDeadline. This keeps multi-minute local binary analyses
+// alive for their full duration while ensuring a worker cancels immediately if
+// it loses database connectivity past its lease window.
 func (o *Orchestrator) startLeaseHeartbeat(execCtx context.Context, cancelExec context.CancelFunc, sub api.Submission, leaseLost *atomic.Bool) func() {
 	interval := o.leaseDuration / 3
 	if interval < time.Millisecond {
