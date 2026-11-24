@@ -126,9 +126,12 @@ func TestPostgresConcurrentClaimsAreExclusive(t *testing.T) {
 }
 
 // TestPostgresOrchestratorEndToEnd runs the full submit-to-completed flow.
+// A hook stands in for a provider adapter. With none, the gateway fails
+// the submission closed (see TestNoExecutorFailsClosed) and this would
+// never reach "completed".
 func TestPostgresOrchestratorEndToEnd(t *testing.T) {
 	store := openPostgresTestStore(t)
-	orch := NewOrchestrator(config.Default(), store)
+	orch := NewOrchestratorWithExecutor(config.Default(), store, nil, succeedingHook)
 	defer orch.Shutdown()
 	sub, err := orch.Submit(context.Background(), api.ArtifactInput{PURL: "pkg:npm/lodash@4.17.20"})
 	if err != nil {

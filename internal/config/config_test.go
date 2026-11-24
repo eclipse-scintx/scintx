@@ -29,7 +29,9 @@ storage:
 	if err := os.WriteFile(secretFile, []byte("secret-from-file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(dbSecretFile, []byte("postgres://user:pass@localhost:5432/scintx\n"), 0o600); err != nil {
+	// No user or password in the URL. The secret scanner treats
+	// user:password@host as a database credential even in tests.
+	if err := os.WriteFile(dbSecretFile, []byte("postgres://localhost:5432/scintx\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,7 +56,7 @@ storage:
 	if cfg.Auth.BearerToken != "secret-from-file" {
 		t.Fatalf("got token %q, want secret-from-file", cfg.Auth.BearerToken)
 	}
-	if cfg.Storage.DSN != "postgres://user:pass@localhost:5432/scintx" {
+	if cfg.Storage.DSN != "postgres://localhost:5432/scintx" {
 		t.Fatalf("got DSN %q, want postgres DSN", cfg.Storage.DSN)
 	}
 	if cfg.Revision == "" {
