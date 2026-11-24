@@ -9,3 +9,5 @@ data/
 *.db
 .tmp/
 .tmp-demo/
+# Lean build output of the formal proofs (formal/). Rebuilt by scripts/formal.sh.
+formal/.lake/

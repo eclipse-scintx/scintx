@@ -73,3 +73,45 @@ jobs:
           CHECK_GENERATED=1 ./scripts/check.sh
       - name: Test coverage
         run: ./scripts/test-coverage.sh
+
+  # Check the Lean proofs of the lease architecture (formal/). This is its
+  # own job, so it can run next to the Go tests, and so that only this job
+  # has to download Lean. It needs Go too: the last step of formal.sh runs
+  # the real workers and lets the Lean model judge what they did. See
+  # section 3 of docs/ARCHITECTURE.md.
+  formal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # Pin to commit SHA (tags are mutable). Dependabot updates these.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install Lean
+        run: |
+          # Take Lean straight from its release page, without the "elan"
+          # installer. That way the SHA-256 below covers the whole compiler.
+          # The version comes from formal/lean-toolchain, the same file that
+          # elan reads on a developer machine. So there is one place to
+          # change it. After a version change the checksum below no longer
+          # matches, and this step fails until it is updated too.
+          version="$(sed 's/.*:v//' formal/lean-toolchain | tr -d '[:space:]')"
+          curl --fail --silent --show-error --location \
+            "https://github.com/leanprover/lean4/releases/download/v${version}/lean-${version}-linux.tar.zst" \
+            -o /tmp/lean.tar.zst
+          echo "2b7ab1ed8b92d2e6abfaf41344823b510064dbc9c0260cac73eb496ab2dea6eb  /tmp/lean.tar.zst" | sha256sum --check -
+          mkdir -p "${HOME}/lean"
+          tar --zstd -xf /tmp/lean.tar.zst -C "${HOME}/lean" --strip-components=1
+          # Later steps find "lean" and "lake" through the PATH.
+          echo "${HOME}/lean/bin" >> "${GITHUB_PATH}"
+      - name: Check the lease proofs
+        run: |
+          chmod +x scripts/*.sh
+          # CHECK_GENERATED=1 also fails the job when the lease test vectors
+          # (internal/gateway/testdata/lease_vectors.json) are out of date.
+          # The script's last step is the worker trace test. It is skipped
+          # in the "test" job above, which has no Lean, and it runs here.
+          CHECK_GENERATED=1 ./scripts/formal.sh

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Machine-checked proofs of the lease and fencing design (Lean 4, in
+  `formal/`; run `./scripts/formal.sh`). The model also prints test
+  scenarios that the Go tests replay against the memory, SQLite and
+  PostgreSQL stores. In the other direction, a Go test records what the
+  real workers do, and the model judges the recording. See section 3 of
+  `docs/ARCHITECTURE.md`.
 - Blob storage for `content` uploads (`SCINTX_BLOB_DIR` / `storage.blobDir`,
   default `data/blobs`). Uploads are streamed to disk with constant memory,
   kept only until their submission is `completed` or `failed`, and swept

@@ -17,8 +17,8 @@ import (
 // Which clock does a lease use?
 //
 // A lease is only safe when every gateway compares it with the same clock.
-// Otherwise a gateway whose clock runs ahead sees a live lease as expired
-// and claims the row a second time.
+// The formal proof showed what happens otherwise: a gateway whose clock runs
+// ahead sees a live lease as expired and claims the row a second time.
 //
 // PostgreSQL is shared by all gateways, so its clock is the one to use. The
 // two constants below wrap a query argument N into the expression "the

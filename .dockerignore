@@ -5,8 +5,9 @@
 # reasons:
 #
 #   1. The image needs very little: the Go sources and one config file.
-#      The old list left out a few things, but still sent docs, scripts,
-#      schemas, tests, and local scratch directories.
+#      The old list left out a few things, but still sent the Lean proofs
+#      (formal/, several MB with build output), docs, scripts, schemas,
+#      tests, and local scratch directories.
 #   2. A file that nobody thought of can never slip in. That matters for
 #      secrets (.env.local, a key file): "COPY . ." in the Dockerfile would
 #      put them in a builder layer.

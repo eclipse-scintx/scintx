@@ -74,9 +74,10 @@ func (o *Orchestrator) startLeaseHeartbeat(execCtx context.Context, cancelExec c
 		// time this goroutine started, which is later by however long the
 		// claim query took.
 		//
-		// The rule "at most one worker holds an unexpired lease" depends
-		// on this. It breaks if the deadline is taken from a fresh clock
-		// reading instead.
+		// This rule is the key fact of the formal proof ("LeaseInv" in
+		// formal/LeaseProof/Lease.lean). The theorem "at most one worker
+		// holds an unexpired lease" depends on it. The proof fails if the
+		// deadline is taken from a fresh clock reading instead.
 		leaseDeadline := claimedAt.Add(o.leaseDuration)
 		// Read once. The store does not change for the life of this worker.
 		followWall := o.storeFollowsWallClock()
@@ -99,7 +100,10 @@ func (o *Orchestrator) startLeaseHeartbeat(execCtx context.Context, cancelExec c
 					return
 				}
 				// The renewal must not outlive the lease, so its context
-				// ends at leaseDeadline.
+				// ends at leaseDeadline. The worker trace test also reads
+				// the deadline from this context: that is how the Lean
+				// model gets to check that leaseDeadline is never too late
+				// (see trace_store_test.go). Keep the two in step.
 				renewCtx, cancelRenew := context.WithDeadline(execCtx, leaseDeadline)
 				err := o.store.RenewLease(renewCtx, sub.ID, sub.Attempts, now, o.leaseDuration)
 				cancelRenew()

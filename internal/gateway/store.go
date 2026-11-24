@@ -49,6 +49,13 @@ var ErrRetryable = errors.New("retryable submission execution error")
 // Store abstracts submission persistence and lease-based work claiming across
 // SQLite, PostgreSQL, and in-memory backends.
 //
+// The lease and fencing rules of this interface are formally verified. The
+// Lean model in formal/LeaseProof/Store.lean mirrors these methods one by
+// one. If you change WHEN a method accepts or refuses a write, change the
+// model in the same way and run ./scripts/formal.sh. The proofs are about
+// the model, so they only say something while the model matches this code.
+// See docs/ARCHITECTURE.md, section 3.
+//
 // About the "now" arguments: "now" is the caller's reading of its OWN clock,
 // taken just before the call. A store without a clock of its own (memory,
 // SQLite) uses it as it is. PostgreSQL has its own clock and uses that one
@@ -68,7 +75,7 @@ type Store interface {
 	//
 	// It only ever moves the lease FORWARD: the new lease is the later of
 	// the stored lease and now + leaseDuration. It used to set the lease to
-	// now + leaseDuration in every case. That had a flaw:
+	// now + leaseDuration in every case. The formal proof showed the flaw:
 	// an old renewal that arrived after a newer one moved the lease back,
 	// and a second worker could then claim the row too early.
 	//

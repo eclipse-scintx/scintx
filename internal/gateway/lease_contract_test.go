@@ -15,9 +15,9 @@ import (
 	"github.com/eclipse-scintx/scintx/api"
 )
 
-// The lease contract checks two lease rules. Like the store contract, it
-// runs against the memory store, SQLite, and (see postgres_test.go)
-// PostgreSQL.
+// The lease contract checks the two lease rules that the formal proof asked
+// for. Like the store contract, it runs against the memory store, SQLite,
+// and (see postgres_test.go) PostgreSQL.
 //
 //  1. RenewLease never moves a lease back.
 //  2. DelayRetry sets the lease, and may move it back.

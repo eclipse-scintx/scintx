@@ -1,7 +1,7 @@
 # Eclipse SCINTX developer entrypoints. Prefer `make <target>` or `./scripts/<name>.sh`.
 # Run `make help` for the list.
 
-.PHONY: help fmt vet lint test test-race build run demo schemas check tidy clean hooks
+.PHONY: help fmt vet lint test test-race build run demo schemas formal check tidy clean hooks
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make <target>\n\nTargets:\n"} \
@@ -33,6 +33,9 @@ demo: ## Run deterministic offline demonstration (startup, submit, status, valid
 
 schemas: ## Validate JSON Schema fixtures
 	./scripts/schemas.sh
+
+formal: ## Check Lean 4 formal lease proofs and model-checked traces
+	./scripts/formal.sh
 
 check: ## Local CI: fmt, headers, vet, lint, tests, schemas
 	./scripts/check.sh
