@@ -33,7 +33,12 @@ func runServe() error {
 		return fmt.Errorf("load configuration: %w", err)
 	}
 
-	store := gateway.NewStore()
+	store, err := gateway.OpenStore(cfg.Storage.DSN)
+	if err != nil {
+		return fmt.Errorf("open storage: %w", err)
+	}
+	defer store.Close()
+
 	orch := gateway.NewOrchestrator(cfg, store)
 	srv := server.New(cfg, store, orch)
 

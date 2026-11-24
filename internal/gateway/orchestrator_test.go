@@ -6,6 +6,7 @@ package gateway
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/yeeth-security/scintx/api"
@@ -14,7 +15,13 @@ import (
 
 func TestOrchestratorSubmitAndStatus(t *testing.T) {
 	cfg := config.Default()
-	store := NewStore()
+	dsn := "file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "test.db"))
+	store, err := OpenStore(dsn)
+	if err != nil {
+		t.Fatalf("OpenStore failed: %v", err)
+	}
+	defer store.Close()
+
 	orch := NewOrchestrator(cfg, store)
 
 	sub, err := orch.Submit(context.Background(), api.ArtifactInput{
@@ -25,7 +32,10 @@ func TestOrchestratorSubmitAndStatus(t *testing.T) {
 	}
 	orch.Wait()
 
-	finalSub, ok := store.GetSubmission(sub.ID)
+	finalSub, ok, err := store.GetSubmission(context.Background(), sub.ID)
+	if err != nil {
+		t.Fatalf("GetSubmission failed: %v", err)
+	}
 	if !ok {
 		t.Fatal("expected submission in store")
 	}

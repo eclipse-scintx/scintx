@@ -4,7 +4,7 @@
 
 // Package e2e verifies the Eclipse SCINTX gateway workflow:
 // startup, liveness/readiness probes, valid artifact submission, status
-// retrieval, and validation failure.
+// retrieval across persistent SQLite restarts, and validation failure.
 package e2e
 
 import (
@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/yeeth-security/scintx/api"
@@ -22,16 +23,20 @@ import (
 
 func TestGatewayE2E(t *testing.T) {
 	cfg := config.Default()
-	store := gateway.NewStore()
-	orch := gateway.NewOrchestrator(cfg, store)
-	srv := server.New(cfg, store, orch)
+	dsn := "file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "e2e.db"))
 
-	ts := httptest.NewServer(srv.Routes())
-	defer ts.Close()
+	store1, err := gateway.OpenStore(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orch1 := gateway.NewOrchestrator(cfg, store1)
+	srv1 := server.New(cfg, store1, orch1)
+
+	ts1 := httptest.NewServer(srv1.Routes())
 
 	// 1. Verify liveness (/healthz) and readiness (/readyz).
 	for _, endpoint := range []string{"/healthz", "/readyz"} {
-		resp, err := http.Get(ts.URL + endpoint)
+		resp, err := http.Get(ts1.URL + endpoint)
 		if err != nil {
 			t.Fatalf("GET %s: %v", endpoint, err)
 		}
@@ -41,9 +46,9 @@ func TestGatewayE2E(t *testing.T) {
 		}
 	}
 
-	// 2. Submit valid artifact and poll status.
+	// 2. Submit valid artifact and wait for completion.
 	subReq := []byte(`{"artifact":{"purl":"pkg:npm/lodash@4.17.20"}}`)
-	resp, err := http.Post(ts.URL+"/v1/submissions", "application/json", bytes.NewReader(subReq))
+	resp, err := http.Post(ts1.URL+"/v1/submissions", "application/json", bytes.NewReader(subReq))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,10 +60,23 @@ func TestGatewayE2E(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
-	orch.Wait()
+	orch1.Wait()
+	ts1.Close()
+	_ = store1.Close()
 
-	// 3. Retrieve status.
-	statusResp, err := http.Get(ts.URL + "/v1/submissions/" + created.ID)
+	// 3. Simulate gateway restart against the same persistent SQLite database.
+	store2, err := gateway.OpenStore(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+	orch2 := gateway.NewOrchestrator(cfg, store2)
+	srv2 := server.New(cfg, store2, orch2)
+	ts2 := httptest.NewServer(srv2.Routes())
+	defer ts2.Close()
+
+	// Retrieve submission status after restart.
+	statusResp, err := http.Get(ts2.URL + "/v1/submissions/" + created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +91,7 @@ func TestGatewayE2E(t *testing.T) {
 
 	// 4. Verify validation failure on invalid artifact input (422).
 	badReq := []byte(`{"artifact":{"purl":"invalid-purl"}}`)
-	badResp, err := http.Post(ts.URL+"/v1/submissions", "application/json", bytes.NewReader(badReq))
+	badResp, err := http.Post(ts2.URL+"/v1/submissions", "application/json", bytes.NewReader(badReq))
 	if err != nil {
 		t.Fatal(err)
 	}

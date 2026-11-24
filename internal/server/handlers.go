@@ -27,10 +27,15 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// handleReadyz is the readiness probe.
-func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
+// handleReadyz is the readiness probe, verifying both server state and
+// persistent store connectivity.
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	if s.shuttingDown.Load() {
 		writeProblem(w, http.StatusServiceUnavailable, "shutting_down", "gateway is shutting down")
+		return
+	}
+	if err := s.store.Ping(r.Context()); err != nil {
+		writeProblem(w, http.StatusServiceUnavailable, "storage_unavailable", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -110,7 +115,11 @@ func (s *Server) parseMultipartSubmission(r *http.Request) (createSubmissionRequ
 // handleGetSubmission handles GET /v1/submissions/{id}.
 func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	sub, ok := s.store.GetSubmission(id)
+	sub, ok, err := s.store.GetSubmission(r.Context(), id)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
 	if !ok {
 		writeProblem(w, http.StatusNotFound, "not_found", "submission not found")
 		return

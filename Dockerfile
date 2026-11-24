@@ -14,20 +14,26 @@ RUN go mod download && go mod verify
 # Copy source and build a reproducible static binary.
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags="-s -w -buildid=" -o /out/scintx ./cmd/scintx
+    go build -trimpath -ldflags="-s -w -buildid=" -o /out/scintx ./cmd/scintx && \
+    mkdir -p /out/data
 
 # Stage 2: Minimal distroless runtime running as non-root (UID/GID 65532).
 FROM gcr.io/distroless/static-debian12:nonroot
 
 WORKDIR /app
 
-# Copy compiled gateway binary and default read-only configuration.
+# Copy compiled gateway binary, default read-only configuration, and writable /data dir.
 COPY --from=builder /out/scintx /scintx
 COPY --from=builder /src/gateway.yaml /app/gateway.yaml
+COPY --from=builder --chown=65532:65532 /out/data /data
+
+# Default to persistent SQLite database under /data (override with SCINTX_DATABASE_URL).
+ENV SCINTX_DATABASE_URL="file:/data/scintx.db"
 
 # Run as non-root user (65532:65532).
 USER 65532:65532
 
+VOLUME ["/data"]
 EXPOSE 8080
 
 # Built-in health probe works inside distroless without curl or a shell.

@@ -21,14 +21,14 @@ import (
 // Server wraps the HTTP mux, configuration, store, and orchestrator.
 type Server struct {
 	cfg          *config.Config
-	store        *gateway.Store
+	store        gateway.Store
 	orchestrator *gateway.Orchestrator
 	httpServer   *http.Server
 	shuttingDown atomic.Bool
 }
 
 // New creates a configured HTTP gateway Server.
-func New(cfg *config.Config, store *gateway.Store, orch *gateway.Orchestrator) *Server {
+func New(cfg *config.Config, store gateway.Store, orch *gateway.Orchestrator) *Server {
 	s := &Server{
 		cfg:          cfg,
 		store:        store,
@@ -62,12 +62,13 @@ func (s *Server) Start() error {
 	return s.httpServer.ListenAndServe()
 }
 
-// Shutdown marks the server as not ready, drains HTTP connections, and waits
-// for in-flight submissions to finish.
+// Shutdown marks the server as not ready, drains HTTP connections, waits for
+// in-flight submissions to finish, and closes the persistent store.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.shuttingDown.Store(true)
 	err := s.httpServer.Shutdown(ctx)
 	s.orchestrator.Wait()
+	_ = s.store.Close()
 	return err
 }
 

@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/yeeth-security/scintx/api"
@@ -20,7 +21,12 @@ import (
 func newTestServer(t *testing.T) (*Server, *gateway.Orchestrator) {
 	t.Helper()
 	cfg := config.Default()
-	store := gateway.NewStore()
+	dsn := "file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "server-test.db"))
+	store, err := gateway.OpenStore(dsn)
+	if err != nil {
+		t.Fatalf("OpenStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
 	orch := gateway.NewOrchestrator(cfg, store)
 	return New(cfg, store, orch), orch
 }

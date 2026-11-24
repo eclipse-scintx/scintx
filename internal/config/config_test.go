@@ -14,11 +14,14 @@ func TestLoadPrecedenceAndValidation(t *testing.T) {
 	dir := t.TempDir()
 	cfgFile := filepath.Join(dir, "gateway.yaml")
 	secretFile := filepath.Join(dir, "bearer.secret")
+	dbSecretFile := filepath.Join(dir, "db.secret")
 
 	yamlContent := `
 gateway:
   instanceId: "gw-file"
   listenAddr: ":9090"
+storage:
+  dsn: "file:from-yaml.db"
 `
 	if err := os.WriteFile(cfgFile, []byte(yamlContent), 0o600); err != nil {
 		t.Fatal(err)
@@ -26,9 +29,13 @@ gateway:
 	if err := os.WriteFile(secretFile, []byte("secret-from-file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(dbSecretFile, []byte("postgres://user:pass@localhost:5432/scintx\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Setenv("SCINTX_ADDR", ":7070")
 	t.Setenv("SCINTX_AUTH_BEARER_TOKEN_FILE", secretFile)
+	t.Setenv("SCINTX_DATABASE_URL_FILE", dbSecretFile)
 
 	cfg, err := Load(cfgFile)
 	if err != nil {
@@ -43,9 +50,12 @@ gateway:
 	if cfg.Gateway.InstanceID != "gw-file" {
 		t.Fatalf("got InstanceID %q, want gw-file", cfg.Gateway.InstanceID)
 	}
-	// Secret file loads cleanly.
+	// Secret files load cleanly and override YAML.
 	if cfg.Auth.BearerToken != "secret-from-file" {
 		t.Fatalf("got token %q, want secret-from-file", cfg.Auth.BearerToken)
+	}
+	if cfg.Storage.DSN != "postgres://user:pass@localhost:5432/scintx" {
+		t.Fatalf("got DSN %q, want postgres DSN", cfg.Storage.DSN)
 	}
 	if cfg.Revision == "" {
 		t.Fatal("expected non-empty config revision")

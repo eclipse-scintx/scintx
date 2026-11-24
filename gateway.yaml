@@ -8,3 +8,7 @@ gateway:
   version: "0.1.0"
   listenAddr: ":8080"
   maxContentBytes: 67108864
+
+storage:
+  # Persistent SQLite file by default; also accepts "postgres://..." or "memory".
+  dsn: "file:data/scintx.db"

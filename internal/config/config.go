@@ -20,6 +20,7 @@ import (
 // Config holds the complete gateway configuration.
 type Config struct {
 	Gateway GatewaySettings `yaml:"gateway" json:"gateway"`
+	Storage StorageSettings `yaml:"storage" json:"storage"`
 	Auth    AuthSettings    `yaml:"auth" json:"auth"`
 
 	// Revision is a short SHA-256 fingerprint of the resolved configuration.
@@ -32,6 +33,13 @@ type GatewaySettings struct {
 	Version         string `yaml:"version" json:"version"`
 	ListenAddr      string `yaml:"listenAddr" json:"listenAddr"`
 	MaxContentBytes int64  `yaml:"maxContentBytes" json:"maxContentBytes"`
+}
+
+// StorageSettings configures persistent submission storage (SQLite or PostgreSQL).
+type StorageSettings struct {
+	// DSN is a SQLite path/URI (e.g. "file:data/scintx.db") or a PostgreSQL
+	// connection URI ("postgres://..."). Use "memory" for in-memory storage.
+	DSN string `yaml:"dsn" json:"dsn"`
 }
 
 // AuthSettings configures optional inbound authentication for /v1/* endpoints.
@@ -47,6 +55,9 @@ func Default() *Config {
 			Version:         "0.1.0",
 			ListenAddr:      ":8080",
 			MaxContentBytes: api.DefaultMaxContentBytes,
+		},
+		Storage: StorageSettings{
+			DSN: "file:data/scintx.db",
 		},
 	}
 }
@@ -90,6 +101,14 @@ func applyEnvOverrides(cfg *Config) error {
 		cfg.Gateway.InstanceID = v
 	}
 
+	dbDSN, err := resolveSecret("SCINTX_DATABASE_URL")
+	if err != nil {
+		return err
+	}
+	if dbDSN != "" {
+		cfg.Storage.DSN = dbDSN
+	}
+
 	bearer, err := resolveSecret("SCINTX_AUTH_BEARER_TOKEN")
 	if err != nil {
 		return err
@@ -120,6 +139,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.MaxContentBytes <= 0 {
 		return fmt.Errorf("gateway.maxContentBytes must be positive")
+	}
+	if strings.TrimSpace(c.Storage.DSN) == "" {
+		return fmt.Errorf("storage.dsn is required")
 	}
 	return nil
 }

@@ -8,7 +8,7 @@
 
 ## Overview
 
-The Eclipse SCINTX gateway provides a containerized HTTP service for artifact submission, validation (`purl`, cryptographic `digest`, or raw `content` bytes), status tracking, and health probing.
+The Eclipse SCINTX gateway provides a containerized HTTP service for artifact submission, validation (`purl`, cryptographic `digest`, or raw `content` bytes), persistent status tracking, and health probing.
 
 ---
 
@@ -37,10 +37,10 @@ Build the reproducible, non-root container image:
 docker build -t scintx-gateway:latest .
 ```
 
-Run the container:
+Run the container with a mounted `/data` volume for persistent SQLite storage:
 
 ```bash
-docker run --rm -p 8080:8080 scintx-gateway:latest
+docker run --rm -p 8080:8080 -v scintx-data:/data scintx-gateway:latest
 ```
 
 ### Container Runtime and Filesystem Requirements
@@ -50,7 +50,8 @@ docker run --rm -p 8080:8080 scintx-gateway:latest
 - **Filesystem requirements:**
   - `/scintx`: Read-only gateway executable.
   - `/app/gateway.yaml`: Read-only default gateway configuration.
-  - `/tmp`: Only used if a `multipart/form-data` upload exceeds the 32 MiB in-memory multipart buffer. The container supports `--read-only` root filesystems when `--tmpfs /tmp:rw,noexec,nosuid,size=128m` is provided.
+  - `/data`: Writable directory (owned by `65532:65532`) for the default SQLite database (`file:/data/scintx.db`) and WAL files when using embedded SQLite storage.
+  - `/tmp`: Only used if a `multipart/form-data` upload exceeds the 32 MiB in-memory multipart buffer. The container supports `--read-only` root filesystems when `/data` is mounted (or PostgreSQL is configured) and `--tmpfs /tmp:rw,noexec,nosuid,size=128m` is provided.
 
 ---
 
@@ -59,7 +60,7 @@ docker run --rm -p 8080:8080 scintx-gateway:latest
 The gateway exposes HTTP health endpoints and a built-in CLI probe subcommand (`scintx health`) that works inside the distroless image without `curl` or a shell:
 
 - **Liveness (`GET /healthz`):** Returns `200 OK` (`{"status":"ok"}`) when the HTTP server process is alive.
-- **Readiness (`GET /readyz`):** Returns `200 OK` (`{"status":"ready"}`) when configuration is loaded and the server is ready to accept submissions. Returns `503 Service Unavailable` during graceful shutdown.
+- **Readiness (`GET /readyz`):** Returns `200 OK` (`{"status":"ready"}`) when configuration is loaded, the persistent database (`SQLite` or `PostgreSQL`) responds to a health ping, and the server is ready to accept submissions. Returns `503 Service Unavailable` during graceful shutdown or if storage is unreachable.
 - **Container probe command:** `["/scintx", "health"]` (configured as the `Dockerfile` `HEALTHCHECK`).
 
 ---
@@ -68,11 +69,11 @@ The gateway exposes HTTP health endpoints and a built-in CLI probe subcommand (`
 
 Configuration values resolve in precedence order (highest to lowest):
 
-1. **Environment variables and mounted `*_FILE` secret files** (e.g., `SCINTX_ADDR`, `SCINTX_INSTANCE_ID`, `SCINTX_AUTH_BEARER_TOKEN`, `SCINTX_AUTH_BEARER_TOKEN_FILE`)
+1. **Environment variables and mounted `*_FILE` secret files** (e.g., `SCINTX_ADDR`, `SCINTX_INSTANCE_ID`, `SCINTX_DATABASE_URL`, `SCINTX_DATABASE_URL_FILE`, `SCINTX_AUTH_BEARER_TOKEN`, `SCINTX_AUTH_BEARER_TOKEN_FILE`)
 2. **Gateway configuration file** (`gateway.yaml` or `SCINTX_CONFIG`)
 3. **Built-in defaults**
 
-Secrets and credentials are supplied via environment variables or mounted secret files (`*_FILE`) and are never written into `gateway.yaml` or responses.
+Secrets and database credentials are supplied via environment variables or mounted secret files (`*_FILE`) and are never written into `gateway.yaml` or API responses.
 
 ---
 
@@ -102,12 +103,12 @@ curl -i -X POST http://127.0.0.1:8080/v1/submissions \
 
 ---
 
-## State Retention, Restart Behavior, and Limitations
+## Persistent Storage, Restart Behavior, and Limitations
 
-- **In-memory state retention:** The gateway stores submissions in an in-memory store (`internal/gateway/store.go`) for the lifetime of the container process.
-- **Restart behavior:** Graceful shutdown (`SIGTERM` / `SIGINT`) marks `/readyz` as `503 Service Unavailable`, drains active HTTP connections, and waits for in-flight submissions to finish before exiting. All in-memory submission state is cleared on process or container restart; consumers polling a submission across a gateway restart receive `404 Not Found` and should resubmit.
+- **Persistent state retention (`SQLite` & `PostgreSQL`):** Submissions are persisted via `database/sql` (`internal/gateway/sql_store.go`). By default, the gateway uses a pure-Go embedded SQLite database (`file:data/scintx.db` locally, `file:/data/scintx.db` in containers) with Write-Ahead Logging (`WAL`). For multi-instance deployments, set `SCINTX_DATABASE_URL` (or `SCINTX_DATABASE_URL_FILE`) to a `postgres://...` connection URI.
+- **Restart behavior:** Graceful shutdown (`SIGTERM` / `SIGINT`) marks `/readyz` as `503 Service Unavailable`, drains active HTTP connections, waits for in-flight submissions to finish, and cleanly closes the database connection. Submissions stored in SQLite (with a mounted `/data` volume) or PostgreSQL survive process and container restarts.
 - **Deployment limitations:**
-  - Single-instance, in-memory state (no shared database or cross-restart persistence).
+  - Embedded SQLite supports a single gateway container instance; multi-replica deployments require PostgreSQL (`SCINTX_DATABASE_URL=postgres://...`).
   - Provider adapter execution, aggregation, and policy evaluation are staged in subsequent releases.
 
 ---

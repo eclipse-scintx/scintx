@@ -14,15 +14,15 @@ import (
 )
 
 // Orchestrator accepts validated artifact submissions and manages their
-// lifecycle state in memory.
+// lifecycle state in the configured persistent Store.
 type Orchestrator struct {
 	cfg   *config.Config
-	store *Store
+	store Store
 	wg    sync.WaitGroup
 }
 
 // NewOrchestrator constructs a gateway orchestrator.
-func NewOrchestrator(cfg *config.Config, store *Store) *Orchestrator {
+func NewOrchestrator(cfg *config.Config, store Store) *Orchestrator {
 	return &Orchestrator{
 		cfg:   cfg,
 		store: store,
@@ -45,7 +45,9 @@ func (o *Orchestrator) Submit(ctx context.Context, artifact api.ArtifactInput) (
 		AcceptedAt:    now,
 		Artifact:      normArtifact,
 	}
-	o.store.PutSubmission(sub)
+	if err := o.store.PutSubmission(ctx, sub); err != nil {
+		return api.Submission{}, err
+	}
 
 	o.wg.Add(1)
 	go func(s api.Submission) {
@@ -62,12 +64,12 @@ func (o *Orchestrator) Wait() {
 }
 
 // ExecuteSubmission runs the submission lifecycle synchronously.
-func (o *Orchestrator) ExecuteSubmission(_ context.Context, sub api.Submission) {
+func (o *Orchestrator) ExecuteSubmission(ctx context.Context, sub api.Submission) {
 	sub.Status = api.SubmissionRunning
-	o.store.PutSubmission(sub)
+	_ = o.store.PutSubmission(ctx, sub)
 
 	doneAt := time.Now().UTC()
 	sub.Status = api.SubmissionCompleted
 	sub.CompletedAt = &doneAt
-	o.store.PutSubmission(sub)
+	_ = o.store.PutSubmission(ctx, sub)
 }
