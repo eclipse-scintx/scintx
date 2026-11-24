@@ -81,12 +81,12 @@ func (s *Server) Start() error {
 }
 
 // Shutdown transitions the server from StateReady to StateDraining, drains
-// HTTP connections, waits for in-flight submissions to finish, closes the
-// persistent store, and transitions to StateStopped.
+// HTTP connections, waits for any in-flight submission up to ctx deadline,
+// closes the persistent store, and transitions to StateStopped.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.state.Store(int32(StateDraining))
 	err := s.httpServer.Shutdown(ctx)
-	s.orchestrator.Shutdown()
+	s.orchestrator.ShutdownWithContext(ctx)
 	_ = s.store.Close()
 	s.state.Store(int32(StateStopped))
 	return err

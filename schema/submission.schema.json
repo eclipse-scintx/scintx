@@ -11,7 +11,7 @@
     },
     "id": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^submission-[0-9a-f]{32}$"
     },
     "status": {
       "type": "string",

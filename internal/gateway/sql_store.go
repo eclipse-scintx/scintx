@@ -10,8 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -32,8 +30,7 @@ CREATE TABLE IF NOT EXISTS submissions (
 	completed_at TEXT,
 	payload_json TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_submissions_claimable ON submissions(status, lease_until);
-`
+CREATE INDEX IF NOT EXISTS idx_submissions_claimable ON submissions(status, lease_until);`
 
 // SQLStore persists submissions in SQLite or PostgreSQL via database/sql and
 // implements lease-based work claiming and attempt fencing so in-flight
@@ -49,29 +46,22 @@ type SQLStore struct {
 func OpenSQLStore(dsn string) (*SQLStore, error) {
 	lower := strings.ToLower(strings.TrimSpace(dsn))
 	isPostgres := strings.HasPrefix(lower, "postgres://") || strings.HasPrefix(lower, "postgresql://")
-
 	driver := "sqlite"
 	if isPostgres {
 		driver = "pgx"
-	} else {
-		if err := ensureSQLiteDir(dsn); err != nil {
-			return nil, err
-		}
+	} else if err := ensureSQLiteDir(dsn); err != nil {
+		return nil, err
 	}
-
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open %s database: %w", driver, err)
 	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping %s database: %w", driver, err)
 	}
-
 	if !isPostgres {
 		// SQLite supports one writer at a time; enable WAL and busy_timeout.
 		db.SetMaxOpenConns(1)
@@ -80,26 +70,22 @@ func OpenSQLStore(dsn string) (*SQLStore, error) {
 			return nil, fmt.Errorf("configure sqlite pragmas: %w", err)
 		}
 	}
-
 	if _, err := db.ExecContext(ctx, createSubmissionsTableSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize submissions schema: %w", err)
 	}
-
-	return &SQLStore{
-		db:       db,
-		postgres: isPostgres,
-	}, nil
+	return &SQLStore{db: db, postgres: isPostgres}, nil
 }
 
 // PutSubmission inserts a new submission or applies a validated state
-// transition inside a transaction, failing closed on illegal state transitions
-// or stale attempt numbers (fencing token).
+// transition inside a transaction. New submissions use a pure INSERT (never
+// overwriting existing rows on ID collision), and existing rows use an
+// attempt-fenced UPDATE that fails closed with ErrStaleAttempt if the attempt
+// counter changed concurrently.
 func (s *SQLStore) PutSubmission(ctx context.Context, sub api.Submission) error {
 	if !sub.Status.IsValid() {
 		return fmt.Errorf("invalid submission status %q", sub.Status)
 	}
-
 	payload, err := json.Marshal(sub)
 	if err != nil {
 		return fmt.Errorf("marshal submission %s: %w", sub.ID, err)
@@ -115,18 +101,14 @@ func (s *SQLStore) PutSubmission(ctx context.Context, sub api.Submission) error 
 	if s.postgres {
 		selectQuery = `SELECT status, attempts, lease_until FROM submissions WHERE id = $1 FOR UPDATE`
 	}
-
-	var (
-		currentStatusStr string
-		currentAttempts  int
-		leaseUntil       string
-	)
+	var currentStatusStr, leaseUntil string
+	var currentAttempts int
 	err = tx.QueryRowContext(ctx, selectQuery, sub.ID).Scan(&currentStatusStr, &currentAttempts, &leaseUntil)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("check current status for %s: %w", sub.ID, err)
 	}
-
-	if err == nil && currentAttempts != sub.Attempts {
+	exists := !errors.Is(err, sql.ErrNoRows)
+	if exists && currentAttempts != sub.Attempts {
 		return fmt.Errorf("%w: submission %s is at attempt %d, got %d", ErrStaleAttempt, sub.ID, currentAttempts, sub.Attempts)
 	}
 
@@ -134,51 +116,52 @@ func (s *SQLStore) PutSubmission(ctx context.Context, sub api.Submission) error 
 	if !api.CanTransition(currentStatus, sub.Status) {
 		return fmt.Errorf("invalid submission state transition for %s: %q -> %q", sub.ID, currentStatus, sub.Status)
 	}
-
 	if sub.Status.IsTerminal() {
 		leaseUntil = ""
 	}
 
-	acceptedAt := sub.AcceptedAt.UTC().Format(time.RFC3339Nano)
+	// Format timestamps with fixed-width 9-digit nanoseconds so SQL ORDER BY
+	// accepted_at ASC is always strictly chronological.
+	acceptedAt := formatTimestampUTC(sub.AcceptedAt)
 	var completedAt sql.NullString
 	if sub.CompletedAt != nil {
-		completedAt = sql.NullString{
-			String: sub.CompletedAt.UTC().Format(time.RFC3339Nano),
-			Valid:  true,
+		completedAt = sql.NullString{String: formatTimestampUTC(*sub.CompletedAt), Valid: true}
+	}
+
+	if !exists {
+		query := `INSERT INTO submissions (id, status, attempts, lease_until, accepted_at, completed_at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)`
+		if s.postgres {
+			query = `INSERT INTO submissions (id, status, attempts, lease_until, accepted_at, completed_at, payload_json) VALUES ($1, $2, $3, $4, $5, $6, $7)`
 		}
+		if _, err := tx.ExecContext(ctx, query, sub.ID, string(sub.Status), sub.Attempts, leaseUntil, acceptedAt, completedAt, string(payload)); err != nil {
+			return err
+		}
+		return tx.Commit()
 	}
 
-	upsertQuery := `
-INSERT INTO submissions (id, status, attempts, lease_until, accepted_at, completed_at, payload_json)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET
-	status       = excluded.status,
-	attempts     = excluded.attempts,
-	lease_until  = excluded.lease_until,
-	accepted_at  = excluded.accepted_at,
-	completed_at = excluded.completed_at,
-	payload_json = excluded.payload_json
-`
-	if s.postgres {
-		upsertQuery = `
-INSERT INTO submissions (id, status, attempts, lease_until, accepted_at, completed_at, payload_json)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT(id) DO UPDATE SET
-	status       = EXCLUDED.status,
-	attempts     = EXCLUDED.attempts,
-	lease_until  = EXCLUDED.lease_until,
-	accepted_at  = EXCLUDED.accepted_at,
-	completed_at = EXCLUDED.completed_at,
-	payload_json = EXCLUDED.payload_json
-`
-	}
-
-	if _, err := tx.ExecContext(ctx, upsertQuery,
-		sub.ID, string(sub.Status), sub.Attempts, leaseUntil, acceptedAt, completedAt, string(payload),
-	); err != nil {
+	if err := s.updateFencedSubmission(ctx, tx, sub, currentAttempts, leaseUntil, completedAt, string(payload)); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *SQLStore) updateFencedSubmission(ctx context.Context, tx *sql.Tx, sub api.Submission, expectedAttempts int, leaseUntil string, completedAt sql.NullString, payload string) error {
+	query := `UPDATE submissions SET status = ?, attempts = ?, lease_until = ?, completed_at = ?, payload_json = ? WHERE id = ? AND attempts = ?`
+	if s.postgres {
+		query = `UPDATE submissions SET status = $1, attempts = $2, lease_until = $3, completed_at = $4, payload_json = $5 WHERE id = $6 AND attempts = $7`
+	}
+	res, err := tx.ExecContext(ctx, query, string(sub.Status), sub.Attempts, leaseUntil, completedAt, payload, sub.ID, expectedAttempts)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("%w: concurrent modification for %s at attempt %d", ErrStaleAttempt, sub.ID, expectedAttempts)
+	}
+	return nil
 }
 
 // GetSubmission retrieves a submission record by ID from SQLite or PostgreSQL.
@@ -187,7 +170,6 @@ func (s *SQLStore) GetSubmission(ctx context.Context, id string) (api.Submission
 	if s.postgres {
 		query = `SELECT payload_json FROM submissions WHERE id = $1`
 	}
-
 	var payload string
 	err := s.db.QueryRowContext(ctx, query, id).Scan(&payload)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -196,7 +178,6 @@ func (s *SQLStore) GetSubmission(ctx context.Context, id string) (api.Submission
 	if err != nil {
 		return api.Submission{}, false, err
 	}
-
 	var sub api.Submission
 	if err := json.Unmarshal([]byte(payload), &sub); err != nil {
 		return api.Submission{}, false, fmt.Errorf("unmarshal submission %s: %w", id, err)
@@ -205,26 +186,7 @@ func (s *SQLStore) GetSubmission(ctx context.Context, id string) (api.Submission
 }
 
 // Ping checks connectivity to the SQL database.
-func (s *SQLStore) Ping(ctx context.Context) error {
-	return s.db.PingContext(ctx)
-}
+func (s *SQLStore) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
 // Close closes the underlying sql.DB pool.
-func (s *SQLStore) Close() error {
-	return s.db.Close()
-}
-
-func ensureSQLiteDir(dsn string) error {
-	path := strings.TrimPrefix(strings.TrimSpace(dsn), "file:")
-	if idx := strings.IndexByte(path, '?'); idx >= 0 {
-		path = path[:idx]
-	}
-	if path == "" || path == ":memory:" {
-		return nil
-	}
-	dir := filepath.Dir(path)
-	if dir == "." || dir == "" {
-		return nil
-	}
-	return os.MkdirAll(dir, 0o750)
-}
+func (s *SQLStore) Close() error { return s.db.Close() }

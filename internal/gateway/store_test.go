@@ -28,13 +28,18 @@ func TestSQLStoreLeaseRecoveryAndAttemptCap(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	inFlight := api.Submission{
 		SchemaVersion: api.SchemaVersionV1,
-		ID:            "submission-aa00bb11cc22",
+		ID:            api.NewID("submission"),
 		Status:        api.SubmissionAccepted,
 		AcceptedAt:    now,
 		Artifact:      api.ArtifactInput{PURL: "pkg:npm/lodash@4.17.20"},
 	}
 	if err := store1.PutSubmission(ctx, inFlight); err != nil {
 		t.Fatalf("PutSubmission(inFlight) failed: %v", err)
+	}
+
+	// Duplicate creation with the same ID must fail closed instead of overwriting.
+	if err := store1.PutSubmission(ctx, inFlight); err == nil {
+		t.Fatal("expected duplicate submission ID creation to fail closed")
 	}
 
 	// Simulate worker claiming the submission with a short 10ms lease, then crashing.
@@ -93,7 +98,7 @@ func TestLeaseHeartbeatAndAttemptFencing(t *testing.T) {
 	// Worker 1's RenewLease and PutSubmission calls must fail closed with ErrStaleAttempt.
 	sub := api.Submission{
 		SchemaVersion: api.SchemaVersionV1,
-		ID:            "submission-112233445566",
+		ID:            api.NewID("submission"),
 		Status:        api.SubmissionAccepted,
 		AcceptedAt:    now,
 		Artifact:      api.ArtifactInput{PURL: "pkg:npm/lodash@4.17.20"},

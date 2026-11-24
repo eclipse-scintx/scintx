@@ -66,13 +66,25 @@ FIXTURES = [
         "submission completed response",
         {
             "schemaVersion": "1",
-            "id": "submission-123",
+            "id": "submission-" + "a" * 32,
             "status": "completed",
             "acceptedAt": "2026-04-20T21:14:03Z",
             "completedAt": "2026-04-20T21:14:05Z",
             "artifact": {"purl": "pkg:npm/lodash@4.17.20"},
         },
         True,
+    ),
+    (
+        "submission.schema.json",
+        "submission invalid id format (should fail)",
+        {
+            "schemaVersion": "1",
+            "id": "submission-short",
+            "status": "completed",
+            "acceptedAt": "2026-04-20T21:14:03Z",
+            "artifact": {"purl": "pkg:npm/lodash@4.17.20"},
+        },
+        False,
     ),
     (
         "problem-details.schema.json",

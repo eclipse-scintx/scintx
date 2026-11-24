@@ -24,8 +24,8 @@ func (s *SQLStore) ClaimNextSubmission(ctx context.Context, now time.Time, lease
 		maxAttempts = DefaultMaxAttempts
 	}
 	nowUTC := now.UTC()
-	nowStr := formatLeaseTime(nowUTC)
-	leaseStr := formatLeaseTime(nowUTC.Add(leaseDuration))
+	nowStr := formatTimestampUTC(nowUTC)
+	leaseStr := formatTimestampUTC(nowUTC.Add(leaseDuration))
 
 	for {
 		sub, exhausted, found, err := s.claimOneCandidate(ctx, nowUTC, nowStr, leaseStr, maxAttempts)
@@ -46,16 +46,10 @@ func (s *SQLStore) ClaimNextSubmission(ctx context.Context, now time.Time, lease
 // RenewLease atomically extends lease_until for an active submission claim
 // only if the row is still in "running" state with the matching attempt number.
 func (s *SQLStore) RenewLease(ctx context.Context, id string, attempt int, now time.Time, leaseDuration time.Duration) error {
-	newLease := formatLeaseTime(now.UTC().Add(leaseDuration))
-	query := `
-UPDATE submissions
-SET lease_until = ?
-WHERE id = ? AND status = 'running' AND attempts = ?`
+	newLease := formatTimestampUTC(now.UTC().Add(leaseDuration))
+	query := `UPDATE submissions SET lease_until = ? WHERE id = ? AND status = 'running' AND attempts = ?`
 	if s.postgres {
-		query = `
-UPDATE submissions
-SET lease_until = $1
-WHERE id = $2 AND status = 'running' AND attempts = $3`
+		query = `UPDATE submissions SET lease_until = $1 WHERE id = $2 AND status = 'running' AND attempts = $3`
 	}
 
 	res, err := s.db.ExecContext(ctx, query, newLease, id, attempt)
@@ -72,6 +66,29 @@ WHERE id = $2 AND status = 'running' AND attempts = $3`
 	return nil
 }
 
+// ReleaseLease clears lease_until for an active "running" submission owned by
+// the given attempt number when a worker is interrupted by graceful shutdown.
+// This allows the next gateway instance to claim the submission immediately.
+func (s *SQLStore) ReleaseLease(ctx context.Context, id string, attempt int) error {
+	query := `UPDATE submissions SET lease_until = '' WHERE id = ? AND status = 'running' AND attempts = ?`
+	if s.postgres {
+		query = `UPDATE submissions SET lease_until = '' WHERE id = $1 AND status = 'running' AND attempts = $2`
+	}
+
+	res, err := s.db.ExecContext(ctx, query, id, attempt)
+	if err != nil {
+		return fmt.Errorf("release lease for %s: %w", id, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("%w: cannot release lease for %s at attempt %d", ErrStaleAttempt, id, attempt)
+	}
+	return nil
+}
+
 func (s *SQLStore) claimOneCandidate(ctx context.Context, nowUTC time.Time, nowStr, leaseStr string, maxAttempts int) (api.Submission, bool, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -80,21 +97,24 @@ func (s *SQLStore) claimOneCandidate(ctx context.Context, nowUTC time.Time, nowS
 	defer func() { _ = tx.Rollback() }()
 
 	findQuery := `
-SELECT payload_json FROM submissions
+SELECT payload_json, attempts FROM submissions
 WHERE status IN ('accepted', 'running') AND (lease_until = '' OR lease_until <= ?)
 ORDER BY accepted_at ASC
 LIMIT 1`
 	if s.postgres {
 		findQuery = `
-SELECT payload_json FROM submissions
+SELECT payload_json, attempts FROM submissions
 WHERE status IN ('accepted', 'running') AND (lease_until = '' OR lease_until <= $1)
 ORDER BY accepted_at ASC
 LIMIT 1
 FOR UPDATE SKIP LOCKED`
 	}
 
-	var payload string
-	err = tx.QueryRowContext(ctx, findQuery, nowStr).Scan(&payload)
+	var (
+		payload      string
+		prevAttempts int
+	)
+	err = tx.QueryRowContext(ctx, findQuery, nowStr).Scan(&payload, &prevAttempts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return api.Submission{}, false, false, nil
 	}
@@ -118,7 +138,7 @@ FOR UPDATE SKIP LOCKED`
 		}
 		newLease = ""
 		completedAt = sql.NullString{
-			String: sub.CompletedAt.UTC().Format(time.RFC3339Nano),
+			String: formatTimestampUTC(*sub.CompletedAt),
 			Valid:  true,
 		}
 	} else {
@@ -133,21 +153,25 @@ FOR UPDATE SKIP LOCKED`
 		return api.Submission{}, false, false, err
 	}
 
-	updateQuery := `
-UPDATE submissions
-SET status = ?, attempts = ?, lease_until = ?, completed_at = ?, payload_json = ?
-WHERE id = ?`
+	// Guard the UPDATE with the previous attempt number so concurrent processes
+	// cannot claim the same attempt simultaneously.
+	updateQuery := `UPDATE submissions SET status = ?, attempts = ?, lease_until = ?, completed_at = ?, payload_json = ? WHERE id = ? AND attempts = ?`
 	if s.postgres {
-		updateQuery = `
-UPDATE submissions
-SET status = $1, attempts = $2, lease_until = $3, completed_at = $4, payload_json = $5
-WHERE id = $6`
+		updateQuery = `UPDATE submissions SET status = $1, attempts = $2, lease_until = $3, completed_at = $4, payload_json = $5 WHERE id = $6 AND attempts = $7`
 	}
-
-	if _, err := tx.ExecContext(ctx, updateQuery,
-		string(sub.Status), sub.Attempts, newLease, completedAt, string(newPayload), sub.ID,
-	); err != nil {
+	res, err := tx.ExecContext(ctx, updateQuery,
+		string(sub.Status), sub.Attempts, newLease, completedAt, string(newPayload), sub.ID, prevAttempts,
+	)
+	if err != nil {
 		return api.Submission{}, false, false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return api.Submission{}, false, false, err
+	}
+	if rows == 0 {
+		// Another worker claimed the candidate first; treat as exhausted/retry loop.
+		return api.Submission{}, true, true, nil
 	}
 	if err := tx.Commit(); err != nil {
 		return api.Submission{}, false, false, err
@@ -155,9 +179,9 @@ WHERE id = $6`
 	return sub, exhausted, true, nil
 }
 
-// formatLeaseTime formats a UTC time with fixed-width nanoseconds so
-// lexicographical string comparison in SQLite and PostgreSQL matches
+// formatTimestampUTC formats a UTC time with fixed-width 9-digit nanoseconds
+// so lexicographical string comparison in SQLite and PostgreSQL always matches
 // chronological ordering.
-func formatLeaseTime(t time.Time) string {
+func formatTimestampUTC(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05.000000000Z")
 }

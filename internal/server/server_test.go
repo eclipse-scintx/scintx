@@ -101,8 +101,8 @@ func TestSubmissionAndStatus(t *testing.T) {
 		t.Fatalf("expected 400 for invalid submission ID format, got %d", rec.Code)
 	}
 
-	// 5. Well-formed but non-existent submission ID returns 404 Not Found.
-	req = httptest.NewRequest(http.MethodGet, "/v1/submissions/submission-000000000000", nil)
+	// 5. Well-formed 128-bit (32 hex chars) but non-existent submission ID returns 404 Not Found.
+	req = httptest.NewRequest(http.MethodGet, "/v1/submissions/submission-00000000000000000000000000000000", nil)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
