@@ -25,9 +25,19 @@ import (
 
 // readingHook returns an execution hook that reads the submission's blob and
 // counts how often it saw exactly want. Then it returns result(attempt).
+// It reads through sub.Artifact.OpenContent when wired (#70), falling back to
+// blobs.Open so both paths are verified.
 func readingHook(blobs blob.Store, want []byte, goodReads *atomic.Int32, result func(attempt int) error) hookFunc {
 	return func(_ context.Context, sub api.Submission) error {
-		reader, err := blobs.Open(sub.ID)
+		var (
+			reader io.ReadCloser
+			err    error
+		)
+		if sub.Artifact.OpenContent != nil {
+			reader, err = sub.Artifact.OpenContent()
+		} else {
+			reader, err = blobs.Open(sub.ID)
+		}
 		if err != nil {
 			return err
 		}

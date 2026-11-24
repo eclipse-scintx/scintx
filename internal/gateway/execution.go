@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"runtime/debug"
 	"sync/atomic"
@@ -67,7 +68,16 @@ func (o *Orchestrator) ExecuteClaimedSubmission(ctx context.Context, sub api.Sub
 
 	var hookErr error
 	if o.execHook != nil {
-		hookErr = o.execHook(execCtx, sub)
+		// Attach OpenContent to a copy of the submission so provider adapters
+		// can stream uploaded bytes via sub.Artifact.OpenContent() (#70).
+		hookSub := sub
+		if hookSub.Artifact.ContentMeta != nil && o.blobs != nil {
+			id := hookSub.ID
+			hookSub.Artifact.OpenContent = func() (io.ReadCloser, error) {
+				return o.OpenContent(id)
+			}
+		}
+		hookErr = o.execHook(execCtx, hookSub)
 	}
 	// Read the timeout state first: stopping the heartbeat cancels execCtx.
 	timedOut := errors.Is(execCtx.Err(), context.DeadlineExceeded)

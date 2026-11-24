@@ -29,19 +29,22 @@ func TestValidateAndNormalizeArtifact(t *testing.T) {
 		t.Fatalf("got %q, want pkg:npm/lodash@4.17.20", a.PURL)
 	}
 
-	// Valid SHA-256 digest succeeds.
-	validDigest := "sha256:" + strings.Repeat("a", 64)
+	// Valid SHA-256 digest succeeds and normalizes uppercase hex to lowercase.
+	validDigest := &Digest{Algorithm: "SHA256", Value: strings.Repeat("A", 64)}
 	a, err = ValidateAndNormalizeArtifact(ArtifactInput{Digest: validDigest}, 1024)
-	if err != nil || a.Digest != validDigest {
-		t.Fatalf("unexpected digest validation result: %v, %+v", err, a)
+	if err != nil || a.Digest == nil || a.Digest.Algorithm != "sha256" || a.Digest.Value != strings.Repeat("a", 64) {
+		t.Fatalf("unexpected digest validation result: %v, %+v", err, a.Digest)
 	}
 
-	// Invalid digest algorithm or length must fail.
-	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{Digest: "md5:1234"}, 1024); err == nil {
+	// Invalid digest algorithm, length, or missing fields must fail.
+	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{Digest: &Digest{Algorithm: "md5", Value: "1234"}}, 1024); err == nil {
 		t.Fatal("expected error for unsupported digest algorithm")
 	}
-	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{Digest: "sha256:1234"}, 1024); err == nil {
+	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{Digest: &Digest{Algorithm: "sha256", Value: "1234"}}, 1024); err == nil {
 		t.Fatal("expected error for short sha256 digest")
+	}
+	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{Digest: &Digest{Algorithm: "sha256"}}, 1024); err == nil {
+		t.Fatal("expected error for digest with empty value")
 	}
 
 	// Multiple artifact types must fail closed (exclusive artifact types only).
@@ -56,7 +59,7 @@ func TestValidateAndNormalizeArtifact(t *testing.T) {
 // TestValidateUploadedContent covers the streamed upload path. It was split
 // from the test above when uploads stopped being buffered in memory.
 func TestValidateUploadedContent(t *testing.T) {
-	validDigest := "sha256:" + strings.Repeat("a", 64)
+	validDigest := &Digest{Algorithm: "sha256", Value: strings.Repeat("a", 64)}
 	contentBytes := []byte("hello world")
 	sum := sha256.Sum256(contentBytes)
 	expectedHex := hex.EncodeToString(sum[:])
@@ -78,7 +81,7 @@ func TestValidateUploadedContent(t *testing.T) {
 	if a.Upload != nil {
 		t.Fatal("expected raw Upload facts to be cleared after validation")
 	}
-	if a.PURL != "" || a.Digest != "" {
+	if a.PURL != "" || a.Digest != nil {
 		t.Fatalf("expected exclusive content artifact without purl/digest, got %+v", a)
 	}
 

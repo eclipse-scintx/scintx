@@ -40,7 +40,13 @@ FIXTURES = [
     (
         "artifact.schema.json",
         "artifact digest",
-        {"digest": "sha256:" + "a" * 64},
+        {"digest": {"algorithm": "sha256", "value": "a" * 64}},
+        True,
+    ),
+    (
+        "artifact.schema.json",
+        "artifact contentMeta",
+        {"contentMeta": {"sha256": "a" * 64, "sizeBytes": 128, "filename": "pkg.tgz"}},
         True,
     ),
     (
@@ -52,7 +58,10 @@ FIXTURES = [
     (
         "artifact.schema.json",
         "artifact multiple types (should fail)",
-        {"purl": "pkg:npm/lodash@4.17.20", "digest": "sha256:" + "a" * 64},
+        {
+            "purl": "pkg:npm/lodash@4.17.20",
+            "digest": {"algorithm": "sha256", "value": "a" * 64},
+        },
         False,
     ),
     (

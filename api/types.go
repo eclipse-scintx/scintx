@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -26,8 +27,11 @@ const DefaultMaxContentBytes int64 = 64 * 1024 * 1024
 // Exactly one of PURL, Digest, or an uploaded file must be supplied
 // (exclusive artifact types).
 type ArtifactInput struct {
-	PURL   string `json:"purl,omitempty"`
-	Digest string `json:"digest,omitempty"`
+	PURL string `json:"purl,omitempty"`
+	// Digest holds a structured hash algorithm and hex value (#68, #70).
+	// Using a struct instead of a single "<algorithm>:<hex>" string lets
+	// policies and provider adapters inspect both fields without string parsing.
+	Digest *Digest `json:"digest,omitempty"`
 
 	// Upload holds what the server measured while streaming an uploaded file
 	// (see HashContent). It is tagged json:"-" so a client can never set it.
@@ -40,7 +44,36 @@ type ArtifactInput struct {
 	// ContentMeta is the validated, public form of Upload. Only the server
 	// fills it in. It keeps its JSON tag because stored submissions are read
 	// back through it, but it is rejected when a client sends it.
-	ContentMeta *ContentMetadata `json:"content,omitempty"`
+	// Updated from json:"content" to json:"contentMeta" to match #70.
+	ContentMeta *ContentMetadata `json:"contentMeta,omitempty"`
+
+	// OpenContent opens a read stream to the uploaded artifact bytes when
+	// ContentMeta is present (#70). It is tagged json:"-" because it is an
+	// in-memory callback attached by the worker when running an adapter.
+	OpenContent func() (io.ReadCloser, error) `json:"-"`
+}
+
+// Digest represents a cryptographic hash algorithm and value (#68, #70).
+type Digest struct {
+	Algorithm string `json:"algorithm"`
+	Value     string `json:"value"`
+}
+
+// ParseDigest splits a "<algorithm>:<hex>" string from a multipart form field
+// into a Digest struct. ValidateDigest checks the returned struct afterward.
+func ParseDigest(s string) *Digest {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return nil
+	}
+	parts := strings.SplitN(trimmed, ":", 2)
+	if len(parts) != 2 {
+		return &Digest{Algorithm: trimmed}
+	}
+	return &Digest{
+		Algorithm: parts[0],
+		Value:     parts[1],
+	}
 }
 
 // ValidateAndNormalizeArtifact validates the submitted artifact fields and
@@ -51,22 +84,26 @@ func ValidateAndNormalizeArtifact(in ArtifactInput, maxBytes int64) (ArtifactInp
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxContentBytes
 	}
-	// A client must not hand us "content" metadata in JSON. The server
+	// A client must not hand us "contentMeta" metadata in JSON. The server
 	// computes it from real bytes. Before this check the object was silently
 	// dropped, so a request could look like it carried content when it did not.
 	if in.ContentMeta != nil {
 		return ArtifactInput{}, fmt.Errorf("%w: content metadata is computed by the server; upload the file with multipart/form-data", ErrValidation)
 	}
 	out := ArtifactInput{
-		PURL:   strings.TrimSpace(in.PURL),
-		Digest: strings.ToLower(strings.TrimSpace(in.Digest)),
+		PURL: strings.TrimSpace(in.PURL),
 	}
 
 	providedCount := 0
 	if out.PURL != "" {
 		providedCount++
 	}
-	if out.Digest != "" {
+	if in.Digest != nil {
+		// Normalize both algorithm and hex value to lowercase and trim whitespace.
+		out.Digest = &Digest{
+			Algorithm: strings.ToLower(strings.TrimSpace(in.Digest.Algorithm)),
+			Value:     strings.ToLower(strings.TrimSpace(in.Digest.Value)),
+		}
 		providedCount++
 	}
 	if in.Upload != nil {
@@ -84,8 +121,8 @@ func ValidateAndNormalizeArtifact(in ArtifactInput, maxBytes int64) (ArtifactInp
 		out.PURL = canonical
 	}
 
-	if out.Digest != "" {
-		if err := ValidateDigest(out.Digest); err != nil {
+	if out.Digest != nil {
+		if err := ValidateDigest(*out.Digest); err != nil {
 			return ArtifactInput{}, err
 		}
 	}
@@ -106,14 +143,14 @@ func ValidateAndNormalizeArtifact(in ArtifactInput, maxBytes int64) (ArtifactInp
 	return out, nil
 }
 
-// ValidateDigest verifies that a digest string uses a supported algorithm
-// prefix (sha256, sha384, sha512) and valid hexadecimal characters.
-func ValidateDigest(d string) error {
-	parts := strings.SplitN(strings.ToLower(strings.TrimSpace(d)), ":", 2)
-	if len(parts) != 2 {
-		return fmt.Errorf("%w: invalid digest %q: expected <algorithm>:<hex>", ErrValidation, d)
+// ValidateDigest verifies that a Digest struct uses a supported algorithm
+// (sha256, sha384, sha512) and valid hexadecimal characters of the right length.
+func ValidateDigest(d Digest) error {
+	alg := strings.ToLower(strings.TrimSpace(d.Algorithm))
+	val := strings.ToLower(strings.TrimSpace(d.Value))
+	if alg == "" || val == "" {
+		return fmt.Errorf("%w: invalid digest: both algorithm and value are required", ErrValidation)
 	}
-	alg, val := parts[0], parts[1]
 	var expectedLen int
 	switch alg {
 	case "sha256":
@@ -129,7 +166,7 @@ func ValidateDigest(d string) error {
 		return fmt.Errorf("%w: invalid %s digest length: got %d hex chars, want %d", ErrValidation, alg, len(val), expectedLen)
 	}
 	if _, err := hex.DecodeString(val); err != nil {
-		return fmt.Errorf("%w: invalid digest hex in %q: %w", ErrValidation, d, err)
+		return fmt.Errorf("%w: invalid digest hex in %s:%s: %w", ErrValidation, alg, val, err)
 	}
 	return nil
 }

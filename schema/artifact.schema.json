@@ -12,10 +12,41 @@
       "pattern": "^pkg:[a-zA-Z0-9._-]+/.+"
     },
     "digest": {
-      "type": "string",
-      "pattern": "^(sha256:[a-fA-F0-9]{64}|sha384:[a-fA-F0-9]{96}|sha512:[a-fA-F0-9]{128})$"
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "value"],
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "enum": ["sha256", "sha384", "sha512"]
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]+$"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "algorithm": { "const": "sha256" },
+            "value": { "pattern": "^[a-fA-F0-9]{64}$" }
+          }
+        },
+        {
+          "properties": {
+            "algorithm": { "const": "sha384" },
+            "value": { "pattern": "^[a-fA-F0-9]{96}$" }
+          }
+        },
+        {
+          "properties": {
+            "algorithm": { "const": "sha512" },
+            "value": { "pattern": "^[a-fA-F0-9]{128}$" }
+          }
+        }
+      ]
     },
-    "content": {
+    "contentMeta": {
       "type": "object",
       "additionalProperties": false,
       "required": ["sha256", "sizeBytes"],
@@ -40,6 +71,6 @@
   "oneOf": [
     { "required": ["purl"] },
     { "required": ["digest"] },
-    { "required": ["content"] }
+    { "required": ["contentMeta"] }
   ]
 }

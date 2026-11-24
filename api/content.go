@@ -63,7 +63,7 @@ func validateUpload(up ContentMetadata, maxBytes int64) (*ContentMetadata, error
 	if up.SizeBytes > maxBytes {
 		return nil, fmt.Errorf("%w: artifact content size %d exceeds maximum %d bytes", ErrValidation, up.SizeBytes, maxBytes)
 	}
-	if err := ValidateDigest("sha256:" + up.SHA256); err != nil {
+	if err := ValidateDigest(Digest{Algorithm: "sha256", Value: up.SHA256}); err != nil {
 		return nil, err
 	}
 	cleanFilename, err := ValidateFilename(up.Filename)

@@ -85,7 +85,13 @@ func (s *Server) parseMultipartSubmission(w http.ResponseWriter, r *http.Request
 		case name == "purl" && !isFile:
 			req.Artifact.PURL, err = readTextField(part, name)
 		case name == "digest" && !isFile:
-			req.Artifact.Digest, err = readTextField(part, name)
+			var rawDigest string
+			rawDigest, err = readTextField(part, name)
+			if err == nil {
+				// Convert the "<algorithm>:<hex>" text field into the structured
+				// Digest model (#68, #70). Validation runs next in SubmitWithContent.
+				req.Artifact.Digest = api.ParseDigest(rawDigest)
+			}
 		case name == "content" && isFile:
 			// The staging file is created only here. A request without a
 			// file never touches the disk. The duplicate check above makes

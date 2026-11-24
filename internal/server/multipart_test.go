@@ -141,10 +141,10 @@ func TestMultipartUploadIsHashedAndSizeLimited(t *testing.T) {
 }
 
 // TestJSONRejectsClientContentMetadata checks that a JSON client cannot send
-// the server-computed "content" object. It used to be dropped without a word.
+// the server-computed "contentMeta" object (#70). It used to be dropped without a word.
 func TestJSONRejectsClientContentMetadata(t *testing.T) {
 	srv, _ := newTestServer(t)
-	body := []byte(`{"artifact":{"purl":"pkg:npm/x@1.0.0","content":{"sha256":"00","sizeBytes":5}}}`)
+	body := []byte(`{"artifact":{"purl":"pkg:npm/x@1.0.0","contentMeta":{"sha256":"00","sizeBytes":5}}}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/submissions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/eclipse-scintx/scintx/api"
@@ -109,6 +110,17 @@ func TestSubmissionAndStatus(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for unknown submission ID, got %d", rec.Code)
 	}
+
+	// 6. Structured digest object submission (#68, #70) succeeds (202 Accepted).
+	digestBody := []byte(`{"artifact":{"digest":{"algorithm":"sha256","value":"` + strings.Repeat("a", 64) + `"}}}`)
+	req = httptest.NewRequest(http.MethodPost, "/v1/submissions", bytes.NewReader(digestBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 for valid digest object, got %d: %s", rec.Code, rec.Body.String())
+	}
+	orch.Wait()
 }
 
 func TestMultipartSubmission(t *testing.T) {
