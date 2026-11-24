@@ -45,7 +45,12 @@ func (o *Orchestrator) claimAndExecuteOne(ctx context.Context, stopOnShutdown bo
 	}()
 	// claimedAt is the "now" the store uses to set the lease. The heartbeat
 	// gets the same value, so its local deadline matches the stored lease.
-	claimedAt := time.Now().UTC()
+	//
+	// No UTC() here on purpose. UTC() would strip the monotonic part of the
+	// reading. With it, "how long ago was this" stays correct even if the
+	// wall clock is set to a new time in between. The heartbeat and the
+	// PostgreSQL store both measure exactly that (see leaseArg).
+	claimedAt := time.Now()
 	sub, ok, err := o.store.ClaimNextSubmission(ctx, claimedAt, o.leaseDuration, o.maxAttempts)
 	if err != nil {
 		// This error used to be dropped, so a database outage was invisible.

@@ -41,6 +41,10 @@ func (o *Orchestrator) startLeaseHeartbeat(execCtx context.Context, cancelExec c
 		// So it starts from claimedAt, not from "now". The old code used the
 		// time this goroutine started, which is later by however long the
 		// claim query took.
+		//
+		// The rule "at most one worker holds an unexpired lease" depends
+		// on this. It breaks if the deadline is taken from a fresh clock
+		// reading instead.
 		leaseDeadline := claimedAt.Add(o.leaseDuration)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -51,12 +55,17 @@ func (o *Orchestrator) startLeaseHeartbeat(execCtx context.Context, cancelExec c
 			case <-execCtx.Done():
 				return
 			case <-ticker.C:
-				now := time.Now().UTC()
+				// No UTC() on these clock readings: it would strip the
+				// monotonic part. With it, the deadline check below still
+				// works if the wall clock is set to a new time.
+				now := time.Now()
 				if !now.Before(leaseDeadline) {
 					leaseLost.Store(true)
 					cancelExec()
 					return
 				}
+				// The renewal must not outlive the lease, so its context
+				// ends at leaseDeadline.
 				renewCtx, cancelRenew := context.WithDeadline(execCtx, leaseDeadline)
 				err := o.store.RenewLease(renewCtx, sub.ID, sub.Attempts, now, o.leaseDuration)
 				cancelRenew()
@@ -68,7 +77,7 @@ func (o *Orchestrator) startLeaseHeartbeat(execCtx context.Context, cancelExec c
 					leaseDeadline = now.Add(o.leaseDuration)
 					continue
 				}
-				if errors.Is(err, ErrStaleAttempt) || !time.Now().UTC().Before(leaseDeadline) {
+				if errors.Is(err, ErrStaleAttempt) || !time.Now().Before(leaseDeadline) {
 					leaseLost.Store(true)
 					cancelExec()
 					return

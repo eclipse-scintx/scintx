@@ -74,6 +74,10 @@ func TestStoreContractPostgres(t *testing.T) {
 	runStoreContract(t, openPostgresTestStore(t))
 }
 
+func TestLeaseContractPostgres(t *testing.T) {
+	runLeaseContract(t, openPostgresTestStore(t))
+}
+
 // TestPostgresConcurrentClaimsAreExclusive lets many goroutines claim at the
 // same time. Each submission must be handed out exactly once.
 func TestPostgresConcurrentClaimsAreExclusive(t *testing.T) {
@@ -156,7 +160,9 @@ func TestPostgresClaimQueryUsesQueueIndex(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	rows, err := conn.QueryContext(ctx, "EXPLAIN "+findClaimablePostgres, "2026-01-01T00:00:00.000000000Z")
+	// The two arguments are seconds to add to the database clock: the new
+	// lease, then "now" (see leaseArg).
+	rows, err := conn.QueryContext(ctx, "EXPLAIN "+findClaimablePostgres, 60.0, 0.0)
 	if err != nil {
 		t.Fatal(err)
 	}

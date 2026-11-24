@@ -48,6 +48,14 @@ var ErrRetryable = errors.New("retryable submission execution error")
 
 // Store abstracts submission persistence and lease-based work claiming across
 // SQLite, PostgreSQL, and in-memory backends.
+//
+// About the "now" arguments: "now" is the caller's reading of its OWN clock,
+// taken just before the call. A store without a clock of its own (memory,
+// SQLite) uses it as it is. PostgreSQL has its own clock and uses that one
+// instead, so that gateways with different clocks still agree on every
+// lease. It only takes the AGE of the reading from the caller (see
+// sql_lease.go). So pass time.Now(), and do not strip its monotonic part
+// with UTC().
 type Store interface {
 	// PutSubmission inserts a new submission or transitions an existing one.
 	// It verifies both state transition validity and the attempt fencing token.
@@ -58,10 +66,22 @@ type Store interface {
 	// RenewLease extends the lease_until timestamp for an in-flight "running"
 	// submission owned by the given attempt number.
 	//
-	// It sets lease_until to now + leaseDuration. The orchestrator also uses
-	// it to delay a retry: a lease in the future stops any worker from
-	// claiming the row until the backoff is over.
+	// It only ever moves the lease FORWARD: the new lease is the later of
+	// the stored lease and now + leaseDuration. It used to set the lease to
+	// now + leaseDuration in every case. That had a flaw:
+	// an old renewal that arrived after a newer one moved the lease back,
+	// and a second worker could then claim the row too early.
+	//
+	// (The orchestrator used to call this to delay a retry as well. A retry
+	// delay can be shorter than the current lease, so it now has its own
+	// method, DelayRetry.)
 	RenewLease(ctx context.Context, id string, attempt int, now time.Time, leaseDuration time.Duration) error
+	// DelayRetry sets lease_until to now + delay for a "running" submission
+	// owned by the given attempt number. A lease in the future stops any
+	// worker from claiming the row, so it works as a "not before" timer for
+	// the next retry. Unlike RenewLease it may move the lease back. That is
+	// safe because the caller has stopped working on the attempt.
+	DelayRetry(ctx context.Context, id string, attempt int, now time.Time, delay time.Duration) error
 	// ReleaseLease clears the active lease_until timestamp for an in-flight
 	// "running" submission when a worker is interrupted by shutdown. The row
 	// can then be claimed again at once. (Retryable failures no longer use

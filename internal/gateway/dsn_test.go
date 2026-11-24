@@ -84,7 +84,8 @@ func TestSQLiteClaimQueryUsesQueueIndex(t *testing.T) {
 	}
 	defer store.Close()
 
-	rows, err := store.db.QueryContext(context.Background(), "EXPLAIN QUERY PLAN "+findClaimableSQLite, "2026-01-01T00:00:00.000000000Z")
+	// The two arguments are the new lease, then "now" (see findClaimableSQLite).
+	rows, err := store.db.QueryContext(context.Background(), "EXPLAIN QUERY PLAN "+findClaimableSQLite, "2026-01-01T00:01:00.000000000Z", "2026-01-01T00:00:00.000000000Z")
 	if err != nil {
 		t.Fatal(err)
 	}

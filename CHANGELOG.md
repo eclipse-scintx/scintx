@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Lease renewals only move a lease forward, so a heartbeat that arrives late
+  can no longer shorten it. Retry backoff uses the new `Store.DelayRetry`.
+- On PostgreSQL, lease times come from the database clock. Gateways only
+  send durations, so gateway clocks that disagree no longer matter.
 - Artifact upload limit raised from 32 MiB to 1 GiB (override via `SCINTX_MAX_ARTIFACT_BYTES`).
 - Artifact read failures now include the underlying error detail; size breaches
   use problem title `artifact_too_large` instead of a generic 400.

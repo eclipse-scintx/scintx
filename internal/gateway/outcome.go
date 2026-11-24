@@ -84,20 +84,24 @@ func (o *Orchestrator) failSubmission(sub *api.Submission, reason string) {
 
 // scheduleRetry makes the submission claimable again after a backoff delay.
 //
-// It reuses RenewLease to do this. RenewLease sets lease_until to now + delay
-// and leaves the row "running". No worker may claim a row whose lease is
-// still in the future, so the lease works as a "not before" timer. When it
-// runs out, the normal poll loop claims the row as the next attempt.
+// DelayRetry sets lease_until to now + delay and leaves the row "running".
+// No worker may claim a row whose lease is still in the future, so the lease
+// works as a "not before" timer. When it runs out, the normal poll loop
+// claims the row as the next attempt.
 //
 // The old code cleared the lease instead. The retry then ran at once, and a
 // provider answering "429" used up every attempt within a millisecond.
+//
+// This used to call RenewLease. RenewLease now only moves a lease forward
+// (see the Store interface), and a retry delay is often shorter than the
+// lease that is left. So the delay has its own store method.
 func (o *Orchestrator) scheduleRetry(sub api.Submission, cause error) {
 	delay := o.retryDelay(sub)
 	log := slog.With("id", sub.ID, "attempt", sub.Attempts)
 	log.Warn("attempt failed with a retryable error; retrying after backoff", "retryIn", delay.String(), "error", cause)
 	ctx, cancel := finalWriteContext()
 	defer cancel()
-	if err := o.store.RenewLease(ctx, sub.ID, sub.Attempts, time.Now().UTC(), delay); err != nil {
+	if err := o.store.DelayRetry(ctx, sub.ID, sub.Attempts, time.Now(), delay); err != nil {
 		// Nothing more to do. The current lease still runs out by itself.
 		log.Error("scheduling the retry failed; it will run when the current lease expires", "error", err)
 	}

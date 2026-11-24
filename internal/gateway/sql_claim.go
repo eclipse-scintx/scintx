@@ -19,15 +19,22 @@ import (
 // so the tests can check their query plans. The status filter is written
 // exactly like the WHERE clause of idx_submissions_queue (see sql_store.go).
 // That match is what lets the database use the index.
+//
+// Each query takes two arguments: the new lease, then "now" (see leaseArg in
+// sql_lease.go for what they are in each dialect). It hands the new lease
+// back as its third column. On SQLite that is just the argument again. On
+// PostgreSQL it is the lease as the DATABASE's clock sees it. Reading it
+// back lets one piece of Go code write the lease for both dialects, and it
+// means the expiry check and the new lease use the very same "now".
 const (
 	findClaimableSQLite = `
-SELECT payload_json, attempts FROM submissions
+SELECT payload_json, attempts, ? FROM submissions
 WHERE status IN ('accepted', 'running') AND (lease_until = '' OR lease_until <= ?)
 ORDER BY attempts ASC, accepted_at ASC
 LIMIT 1`
 	findClaimablePostgres = `
-SELECT payload_json, attempts FROM submissions
-WHERE status IN ('accepted', 'running') AND (lease_until = '' OR lease_until <= $1)
+SELECT payload_json, attempts, ` + pgClockOpen + `$1` + pgClockClose + ` FROM submissions
+WHERE status IN ('accepted', 'running') AND (lease_until = '' OR lease_until <= ` + pgClockOpen + `$2` + pgClockClose + `)
 ORDER BY attempts ASC, accepted_at ASC
 LIMIT 1
 FOR UPDATE SKIP LOCKED`
@@ -41,12 +48,8 @@ func (s *SQLStore) ClaimNextSubmission(ctx context.Context, now time.Time, lease
 	if maxAttempts <= 0 {
 		maxAttempts = DefaultMaxAttempts
 	}
-	nowUTC := now.UTC()
-	nowStr := formatTimestampUTC(nowUTC)
-	leaseStr := formatTimestampUTC(nowUTC.Add(leaseDuration))
-
 	for {
-		sub, exhausted, found, err := s.claimOneCandidate(ctx, nowUTC, nowStr, leaseStr, maxAttempts)
+		sub, exhausted, found, err := s.claimOneCandidate(ctx, now, leaseDuration, maxAttempts)
 		if err != nil {
 			return api.Submission{}, false, err
 		}
@@ -61,52 +64,12 @@ func (s *SQLStore) ClaimNextSubmission(ctx context.Context, now time.Time, lease
 	}
 }
 
-// RenewLease atomically extends lease_until for an active submission claim
-// only if the row is still in "running" state with the matching attempt number.
-func (s *SQLStore) RenewLease(ctx context.Context, id string, attempt int, now time.Time, leaseDuration time.Duration) error {
-	newLease := formatTimestampUTC(now.UTC().Add(leaseDuration))
-	query := `UPDATE submissions SET lease_until = ? WHERE id = ? AND status = 'running' AND attempts = ?`
-	if s.postgres {
-		query = `UPDATE submissions SET lease_until = $1 WHERE id = $2 AND status = 'running' AND attempts = $3`
-	}
+// RenewLease, DelayRetry and ReleaseLease are in sql_lease.go.
 
-	res, err := s.db.ExecContext(ctx, query, newLease, id, attempt)
-	if err != nil {
-		return fmt.Errorf("renew lease for %s: %w", id, err)
-	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows == 0 {
-		return fmt.Errorf("%w: cannot renew lease for %s at attempt %d", ErrStaleAttempt, id, attempt)
-	}
-	return nil
-}
-
-// ReleaseLease clears lease_until for an active "running" submission owned by
-// the given attempt number when a worker is interrupted by graceful shutdown.
-func (s *SQLStore) ReleaseLease(ctx context.Context, id string, attempt int) error {
-	query := `UPDATE submissions SET lease_until = '' WHERE id = ? AND status = 'running' AND attempts = ?`
-	if s.postgres {
-		query = `UPDATE submissions SET lease_until = '' WHERE id = $1 AND status = 'running' AND attempts = $2`
-	}
-
-	res, err := s.db.ExecContext(ctx, query, id, attempt)
-	if err != nil {
-		return fmt.Errorf("release lease for %s: %w", id, err)
-	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows == 0 {
-		return fmt.Errorf("%w: cannot release lease for %s at attempt %d", ErrStaleAttempt, id, attempt)
-	}
-	return nil
-}
-
-func (s *SQLStore) claimOneCandidate(ctx context.Context, nowUTC time.Time, nowStr, leaseStr string, maxAttempts int) (api.Submission, bool, bool, error) {
+func (s *SQLStore) claimOneCandidate(ctx context.Context, now time.Time, leaseDuration time.Duration, maxAttempts int) (api.Submission, bool, bool, error) {
+	// nowUTC only stamps the submission's own timestamps (such as
+	// completedAt). The lease does not use it: see leaseArg.
+	nowUTC := now.UTC()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return api.Submission{}, false, false, err
@@ -121,8 +84,10 @@ func (s *SQLStore) claimOneCandidate(ctx context.Context, nowUTC time.Time, nowS
 	var (
 		payload      string
 		prevAttempts int
+		// leaseStr is the new lease, as the query hands it back.
+		leaseStr string
 	)
-	err = tx.QueryRowContext(ctx, findQuery, nowStr).Scan(&payload, &prevAttempts)
+	err = tx.QueryRowContext(ctx, findQuery, s.leaseArg(now, leaseDuration), s.leaseArg(now, 0)).Scan(&payload, &prevAttempts, &leaseStr)
 	if errors.Is(err, sql.ErrNoRows) {
 		return api.Submission{}, false, false, nil
 	}

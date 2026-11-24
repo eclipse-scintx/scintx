@@ -140,32 +140,7 @@ func isHigherPriorityCandidate(a api.Submission, aID string, b api.Submission, b
 	return aID < bID
 }
 
-// RenewLease extends the lease for an active attempt in memory.
-func (s *MemoryStore) RenewLease(_ context.Context, id string, attempt int, now time.Time, leaseDuration time.Duration) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entry, exists := s.submissions[id]
-	if !exists || entry.sub.Status != api.SubmissionRunning || entry.sub.Attempts != attempt {
-		return fmt.Errorf("%w: cannot renew lease for %s at attempt %d", ErrStaleAttempt, id, attempt)
-	}
-	entry.leaseUntil = now.UTC().Add(leaseDuration)
-	s.submissions[id] = entry
-	return nil
-}
-
-// ReleaseLease clears the active lease for an attempt that a graceful
-// shutdown interrupted, so it can be claimed again at once.
-func (s *MemoryStore) ReleaseLease(_ context.Context, id string, attempt int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entry, exists := s.submissions[id]
-	if !exists || entry.sub.Status != api.SubmissionRunning || entry.sub.Attempts != attempt {
-		return fmt.Errorf("%w: cannot release lease for %s at attempt %d", ErrStaleAttempt, id, attempt)
-	}
-	entry.leaseUntil = time.Time{}
-	s.submissions[id] = entry
-	return nil
-}
+// RenewLease, DelayRetry and ReleaseLease are in memory_lease.go.
 
 // GetSubmission retrieves a submission by ID from memory.
 func (s *MemoryStore) GetSubmission(_ context.Context, id string) (api.Submission, bool, error) {
