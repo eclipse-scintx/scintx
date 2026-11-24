@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `failed` with the error `no provider adapters are configured; the artifact
   was not scanned`, and it is not retried. `completed` will only appear once
   an adapter has really run.
+- Fail closed on an artifact field that is sent without a value (`""`, only
+  spaces, or JSON `null`). Before, an empty `purl` next to a `digest` or a
+  file was dropped without a word and the request was accepted. Now the
+  answer is `422`, as `schema/artifact.schema.json` already demanded.
 - Require Go 1.26.10 (was 1.26.0) to pick up the fix for the compromised
   eMudhra intermediate CA keys (Oct 2026). CI reads the version from `go.mod`.
 - The `configRevision` log value no longer includes the database DSN, which
@@ -51,5 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   send durations, so gateway clocks that disagree no longer matter.
 - Updated `ArtifactInput` to use structured `Digest` (`algorithm` and `value`),
   `contentMeta` JSON key, and `OpenContent` stream reader callback (#68, #70).
+- An idle gateway now looks for work once per second, with one timer for
+  the whole gateway. Before, every worker looked every 100 ms (160 empty
+  database transactions per second with 16 workers). New submissions still
+  start at once. A retry, or work taken over from a dead worker, can start
+  up to one second later than before.
+- `make check` now runs `golangci-lint` (also `make lint`). CI installed the
+  linter before but never ran it. The CI pin moved from v2.2.1 to v2.15.0,
+  because v2.2.1 cannot check a Go 1.26 module.
+- `docker build` only sends the Go sources and `gateway.yaml` to the builder
+  (`.dockerignore` is now an allow list).
 
 [Unreleased]: https://github.com/eclipse-scintx/scintx/commits/HEAD

@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: EPL-2.0
 
-# Full local CI: fmt check, license headers, vet, tests, schemas.
+# Full local CI: fmt check, license headers, vet, lint, tests, schemas.
 # Usage: ./scripts/check.sh
 
 set -euo pipefail
@@ -22,6 +22,10 @@ log "check: license headers (SPDX-License-Identifier: EPL-2.0)"
 "${SCRIPTS_DIR}/headers.sh"
 
 "${SCRIPTS_DIR}/vet.sh"
+# The linter runs after vet and before the tests. It is fast, so a finding
+# shows up before the slow test run starts. Before this line was added, CI
+# installed golangci-lint but nothing ever ran it.
+"${SCRIPTS_DIR}/lint.sh"
 "${SCRIPTS_DIR}/test-race.sh"
 "${SCRIPTS_DIR}/schemas.sh"
 

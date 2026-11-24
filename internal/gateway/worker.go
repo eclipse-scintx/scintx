@@ -17,9 +17,26 @@ import (
 // final before the workers start, which newOrchestrator guarantees.
 
 // claimErrorLogInterval is the shortest gap between two "claim failed" log
-// lines. Every idle worker retries a claim about ten times per second, so an
-// unthrottled log would flood during a database outage.
+// lines. A claim is retried on every poll tick and on every new submission,
+// so an unthrottled log would flood during a database outage. (This comment
+// used to say "every idle worker retries about ten times per second". That
+// is no longer true: see pollLoop.)
 const claimErrorLogInterval = 5 * time.Second
+
+// defaultPollInterval is how often the gateway looks for work that became
+// claimable without a wake signal. There are three such cases:
+//
+//  1. A retry whose backoff has run out (DefaultRetryBackoff, 5 seconds).
+//  2. A lease that expired because its worker died (DefaultLeaseDuration,
+//     30 seconds).
+//  3. A submission that another gateway accepted, when several gateways
+//     share one database.
+//
+// It used to be 100 milliseconds. One second is small next to the 5 and 30
+// seconds above, and it means ten times fewer empty claim transactions. The
+// price: work of these three kinds can start up to one second later. A new
+// submission on this gateway is not affected. Submit wakes a worker at once.
+const defaultPollInterval = time.Second
 
 // claimAndExecuteOne atomically claims a single eligible submission and executes
 // it outside any global lock so other workers can run in parallel.
@@ -92,12 +109,16 @@ func (o *Orchestrator) signalWake() {
 	}
 }
 
-// workerLoop claims and runs submissions until shutdown. It wakes on a
-// signal from Submit or on the poll ticker (to pick up expired leases).
+// workerLoop claims and runs submissions until shutdown. It wakes on a wake
+// signal. The signal comes from Submit (new work), from another worker that
+// just claimed something (there may be more), or from pollLoop (the timer).
+//
+// Each worker used to have its own poll ticker here. Then every idle worker
+// ran an empty claim transaction every 100 milliseconds: 160 per second on a
+// 16-worker gateway with nothing to do. Now one pollLoop ticks for the whole
+// gateway, and a worker only sleeps on wakeCh.
 func (o *Orchestrator) workerLoop() {
 	defer o.wg.Done()
-	ticker := time.NewTicker(o.pollInterval)
-	defer ticker.Stop()
 	for {
 		for o.claimAndExecuteOne(o.workerCtx, true) {
 		}
@@ -107,7 +128,33 @@ func (o *Orchestrator) workerLoop() {
 		case <-o.workerCtx.Done():
 			return
 		case <-o.wakeCh:
+		}
+	}
+}
+
+// pollLoop is the one timer of the gateway. On every tick it wakes ONE idle
+// worker, which tries one claim. So an idle gateway runs one claim
+// transaction per tick, no matter how many workers it has.
+//
+// One wake is enough even when a lot of work turns up at once. A worker that
+// claims something calls signalWake before it starts the work (see
+// claimAndExecuteOne). That wakes the next worker, and so on, until a claim
+// finds nothing.
+//
+// If all workers are busy, nobody reads the signal. That is fine: a worker
+// always tries to claim again right after it finishes, before it sleeps.
+func (o *Orchestrator) pollLoop() {
+	defer o.wg.Done()
+	ticker := time.NewTicker(o.pollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-o.stopCh:
+			return
+		case <-o.workerCtx.Done():
+			return
 		case <-ticker.C:
+			o.signalWake()
 		}
 	}
 }

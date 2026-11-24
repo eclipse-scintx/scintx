@@ -113,7 +113,7 @@ func newOrchestrator(cfg *config.Config, store Store, opts ...orchestratorOption
 		leaseDuration:        DefaultLeaseDuration,
 		maxAttempts:          DefaultMaxAttempts,
 		maxExecutionDuration: DefaultMaxExecutionDuration,
-		pollInterval:         100 * time.Millisecond,
+		pollInterval:         defaultPollInterval,
 		retryBackoff:         DefaultRetryBackoff,
 		sweepInterval:        defaultSweepInterval,
 		orphanGrace:          defaultOrphanGrace,
@@ -132,6 +132,9 @@ func newOrchestrator(cfg *config.Config, store Store, opts ...orchestratorOption
 		o.wg.Add(1)
 		go o.workerLoop()
 	}
+	// One poll timer for all workers (see pollLoop in worker.go).
+	o.wg.Add(1)
+	go o.pollLoop()
 	// The sweeper is counted in wg like a worker, so Shutdown waits for it.
 	if o.blobs != nil {
 		o.wg.Add(1)

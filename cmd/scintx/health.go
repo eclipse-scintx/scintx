@@ -48,12 +48,17 @@ func runHealth(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	// The linter (gosec G704, "request forgery") flags the two calls below,
+	// because the URL comes from an argument or from SCINTX_ADDR. That is
+	// the purpose of this command: the operator names the gateway to probe.
+	// Nothing a remote client sends ever reaches this code. So the finding
+	// is switched off for these two lines only, and stays on everywhere else.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil) //nolint:gosec // G704: see above.
 	if err != nil {
 		return err
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // G704: see above.
 	if err != nil {
 		return err
 	}

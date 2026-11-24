@@ -51,10 +51,19 @@ jobs:
       - name: Install golangci-lint
         run: |
           # SHA-256 verified tarball — version-pinned, tag URLs are mutable.
+          #
+          # The version must be new enough for the Go version in go.mod.
+          # golangci-lint only checks a module whose Go version is not newer
+          # than the Go it was built with. The old pin, v2.2.1, is older than
+          # golangci-lint's Go 1.26 support (that came in v2.9.0), and go.mod
+          # says go 1.26. Nobody saw this, because no script ran the linter.
+          # scripts/check.sh now runs it (scripts/lint.sh), so the pin moved
+          # to v2.15.0. When go.mod moves to a newer Go, raise this pin too,
+          # and change the version (twice) and the checksum together.
           curl --fail --silent --show-error --location \
-            "https://github.com/golangci/golangci-lint/releases/download/v2.2.1/golangci-lint-2.2.1-linux-amd64.tar.gz" \
+            "https://github.com/golangci/golangci-lint/releases/download/v2.15.0/golangci-lint-2.15.0-linux-amd64.tar.gz" \
             -o /tmp/golangci.tgz
-          echo "4098436776a4f4bbef25dcad93f56533003d085f9133e4c69ba3145973d211dc  /tmp/golangci.tgz" | sha256sum --check -
+          echo "9b7fe6a6bf6334b98decf8d86b11415ea7889afdabdd1959fdce23af2a9ebcea  /tmp/golangci.tgz" | sha256sum --check -
           mkdir -p /tmp/gcl-bin
           tar -xzf /tmp/golangci.tgz -C /tmp/gcl-bin --strip-components=1
           sudo mv /tmp/gcl-bin/golangci-lint /usr/local/bin/

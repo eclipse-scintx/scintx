@@ -169,7 +169,8 @@ func applyEnvOverrides(cfg *Config) error {
 func resolveSecret(envName string) (string, error) {
 	fileEnv := envName + "_FILE"
 	if filePath := strings.TrimSpace(os.Getenv(fileEnv)); filePath != "" {
-		data, err := os.ReadFile(filePath)
+		// The operator sets this path in a *_FILE variable. No request can.
+		data, err := os.ReadFile(filePath) //nolint:gosec // G703: trusted path, see above.
 		if err != nil {
 			return "", fmt.Errorf("read secret file %s=%q: %w", fileEnv, filePath, err)
 		}

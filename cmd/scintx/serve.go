@@ -51,7 +51,13 @@ func runServe() error {
 	if err != nil {
 		return fmt.Errorf("open storage: %w", err)
 	}
-	defer store.Close()
+	// This Close is for the early returns below (a bad blob directory, or a
+	// listener that fails to start). On a normal shutdown srv.Shutdown has
+	// already closed the store, and closing it a second time does nothing.
+	// The process is exiting and nothing can act on a close error, so the
+	// error is dropped on purpose. It was dropped before too, but silently.
+	// The linter (errcheck) flagged that, so it is now spelled out.
+	defer func() { _ = store.Close() }()
 
 	// Open the blob directory now, before serving. A missing or read-only
 	// volume then stops the gateway at startup with a clear message. Without

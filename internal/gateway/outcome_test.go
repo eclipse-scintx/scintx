@@ -90,7 +90,11 @@ func TestRetryableErrorWaitsForBackoff(t *testing.T) {
 		mu.Unlock()
 		return errors.Join(ErrRetryable, errors.New("HTTP 429 from https://provider.internal/api?token=secret"))
 	}
-	orch := newOrchestrator(config.Default(), store, withTestSettings(0, 0, hook), withRetryBackoff(backoff))
+	// A retry is found by the poll timer, which ticks once a second by
+	// default. A 5ms poll keeps this test fast. It can only make a retry run
+	// sooner, so the "at least one backoff" checks below lose nothing.
+	orch := newOrchestrator(config.Default(), store, withTestSettings(0, 0, hook), withRetryBackoff(backoff),
+		withPollInterval(5*time.Millisecond))
 	defer orch.Shutdown()
 
 	sub, err := orch.Submit(context.Background(), api.ArtifactInput{PURL: "pkg:npm/rate-limited@1.0.0"})
@@ -137,7 +141,9 @@ func TestBriefSaveErrorDoesNotFailASuccessfulRun(t *testing.T) {
 	store := &flakySaveStore{Store: NewMemoryStore()}
 	hook := func(context.Context, api.Submission) error { return nil }
 	// A 50ms lease lets the second attempt start soon after the failed save.
-	orch := newOrchestrator(config.Default(), store, withTestSettings(50*time.Millisecond, 0, hook))
+	// The expired lease is found by the poll timer, so that is short too.
+	orch := newOrchestrator(config.Default(), store, withTestSettings(50*time.Millisecond, 0, hook),
+		withPollInterval(5*time.Millisecond))
 	defer orch.Shutdown()
 
 	sub, err := orch.Submit(context.Background(), api.ArtifactInput{PURL: "pkg:npm/saved-late@1.0.0"})

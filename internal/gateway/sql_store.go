@@ -112,19 +112,23 @@ func (s *SQLStore) PutSubmission(ctx context.Context, sub api.Submission) error 
 
 func (s *SQLStore) execFencedTransition(ctx context.Context, sub api.Submission, completedAt sql.NullString, payload string) error {
 	var query string
-	if sub.Status == api.SubmissionCompleted {
+	// A switch on the status, one case per target state. It used to be an
+	// if / else-if chain. The behaviour is the same. The switch reads better
+	// and is what the linter asks for (staticcheck QF1003).
+	switch sub.Status {
+	case api.SubmissionCompleted:
 		// Completed transitions are only valid from "running" and clear lease_until.
 		query = `UPDATE submissions SET status = ?, attempts = ?, lease_until = '', completed_at = ?, payload_json = ? WHERE id = ? AND attempts = ? AND status = 'running'`
 		if s.postgres {
 			query = `UPDATE submissions SET status = $1, attempts = $2, lease_until = '', completed_at = $3, payload_json = $4 WHERE id = $5 AND attempts = $6 AND status = 'running'`
 		}
-	} else if sub.Status == api.SubmissionFailed {
+	case api.SubmissionFailed:
 		// Failed transitions are valid from "accepted" or "running" and clear lease_until.
 		query = `UPDATE submissions SET status = ?, attempts = ?, lease_until = '', completed_at = ?, payload_json = ? WHERE id = ? AND attempts = ? AND status IN ('accepted', 'running')`
 		if s.postgres {
 			query = `UPDATE submissions SET status = $1, attempts = $2, lease_until = '', completed_at = $3, payload_json = $4 WHERE id = $5 AND attempts = $6 AND status IN ('accepted', 'running')`
 		}
-	} else {
+	default:
 		// Running transitions preserve lease_until and are valid from "accepted" or "running".
 		query = `UPDATE submissions SET status = ?, attempts = ?, completed_at = ?, payload_json = ? WHERE id = ? AND attempts = ? AND status IN ('accepted', 'running')`
 		if s.postgres {

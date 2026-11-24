@@ -63,3 +63,9 @@ func waitForStatus(t *testing.T, store Store, id string, want api.SubmissionStat
 		time.Sleep(2 * time.Millisecond)
 	}
 }
+
+// withPollInterval makes idle workers look for work more often, so that the
+// test does not wait long for an expired lease to be noticed.
+func withPollInterval(d time.Duration) orchestratorOption {
+	return func(o *Orchestrator) { o.pollInterval = d }
+}

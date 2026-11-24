@@ -87,7 +87,9 @@ func (o *Orchestrator) failSubmission(sub *api.Submission, reason string) {
 // DelayRetry sets lease_until to now + delay and leaves the row "running".
 // No worker may claim a row whose lease is still in the future, so the lease
 // works as a "not before" timer. When it runs out, the normal poll loop
-// claims the row as the next attempt.
+// claims the row as the next attempt. The poll timer ticks once a second
+// (see pollLoop in worker.go), so the retry starts up to one second after
+// the delay has run out.
 //
 // The old code cleared the lease instead. The retry then ran at once, and a
 // provider answering "429" used up every attempt within a millisecond.

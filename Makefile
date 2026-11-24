@@ -1,7 +1,7 @@
 # Eclipse SCINTX developer entrypoints. Prefer `make <target>` or `./scripts/<name>.sh`.
 # Run `make help` for the list.
 
-.PHONY: help fmt vet test test-race build run demo schemas check tidy clean hooks
+.PHONY: help fmt vet lint test test-race build run demo schemas check tidy clean hooks
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make <target>\n\nTargets:\n"} \
@@ -12,6 +12,9 @@ fmt: ## Format Go sources (gofmt -w)
 
 vet: ## Run go vet
 	./scripts/vet.sh
+
+lint: ## Run golangci-lint (rules in .golangci.yml)
+	./scripts/lint.sh
 
 test: ## Run go test ./...
 	./scripts/test.sh
@@ -31,7 +34,7 @@ demo: ## Run deterministic offline demonstration (startup, submit, status, valid
 schemas: ## Validate JSON Schema fixtures
 	./scripts/schemas.sh
 
-check: ## Local CI: fmt, headers, vet, tests, schemas
+check: ## Local CI: fmt, headers, vet, lint, tests, schemas
 	./scripts/check.sh
 
 tidy: ## go mod tidy

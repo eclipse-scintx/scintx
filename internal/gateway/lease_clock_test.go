@@ -34,7 +34,9 @@ func TestMemoryLeaseKeepsMonotonicClock(t *testing.T) {
 	// == sees the monotonic reading. Equal does not. Round(0) strips it.
 	// A lease that compares equal to its stripped form dropped the stopwatch,
 	// and a wall-clock step can then expire it while the worker is still running.
-	if lease == lease.Round(0) {
+	// The linter suggests Equal here. Equal would make this test pass for
+	// every lease, so == stays.
+	if lease == lease.Round(0) { //nolint:staticcheck // QF1009: == is on purpose, see above.
 		t.Fatal("memory lease dropped the monotonic clock")
 	}
 }

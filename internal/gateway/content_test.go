@@ -91,7 +91,8 @@ func TestContentIsKeptAcrossRetries(t *testing.T) {
 		return nil
 	})
 	orch := newOrchestrator(config.Default(), store, withTestSettings(0, 0, hook),
-		withRetryBackoff(5*time.Millisecond), withBlobs(blobs))
+		// The poll timer finds the retry. Keep it as short as the backoff.
+		withRetryBackoff(5*time.Millisecond), withPollInterval(5*time.Millisecond), withBlobs(blobs))
 	defer orch.Shutdown()
 
 	sub := submitContent(t, orch, data)

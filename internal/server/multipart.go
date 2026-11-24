@@ -84,6 +84,13 @@ func (s *Server) parseMultipartSubmission(w http.ResponseWriter, r *http.Request
 		switch {
 		case name == "purl" && !isFile:
 			req.Artifact.PURL, err = readTextField(part, name)
+			// An empty purl field used to count as "no purl". Sent next to
+			// a digest or a file, it was dropped without a word. Now it is
+			// an error (see empty_fields.go). An empty digest field was
+			// already rejected: api.ParseDigest sees to that below.
+			if err == nil && isBlank(req.Artifact.PURL) {
+				err = errEmptyField(name)
+			}
 		case name == "digest" && !isFile:
 			var rawDigest string
 			rawDigest, err = readTextField(part, name)

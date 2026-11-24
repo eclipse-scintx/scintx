@@ -1,8 +1,39 @@
-.git
-.github
-bin/
-data/
-coverage.out
-*.test
-*.out
-.env
+# What "docker build" sends to the builder (the "build context").
+#
+# This file works the other way round from most ignore files. It ignores
+# EVERYTHING first, and then names the few things the build needs. The
+# reasons:
+#
+#   1. The image needs very little: the Go sources and one config file.
+#      The old list left out a few things, but still sent docs, scripts,
+#      schemas, tests, and local scratch directories.
+#   2. A file that nobody thought of can never slip in. That matters for
+#      secrets (.env.local, a key file): "COPY . ." in the Dockerfile would
+#      put them in a builder layer.
+#   3. Editing a doc or a script no longer throws away the build cache.
+#
+# The price: a NEW top-level Go package directory must be added below. If
+# it is forgotten, "docker build" stops with a "package ... is not in std"
+# error. It cannot go wrong quietly.
+#
+# The old list was: .git, .github, bin/, data/, coverage.out, *.test,
+# *.out, .env. All of these are still left out, by the "*" line.
+
+# 1. Ignore everything.
+*
+
+# 2. Let in what the Dockerfile uses.
+#    Module files. The Dockerfile copies them first, to cache the downloads.
+!go.mod
+!go.sum
+#    The default configuration. It is copied into the image as /app/gateway.yaml.
+!gateway.yaml
+#    The Go packages that ./cmd/scintx is built from.
+!api
+!cmd
+!internal
+
+# 3. Inside those directories, leave out what "go build" never reads.
+#    These lines must stay AFTER the "!" lines: the last matching line wins.
+**/*_test.go
+**/testdata

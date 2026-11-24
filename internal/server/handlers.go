@@ -5,6 +5,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -129,8 +130,16 @@ func (s *Server) parseJSONSubmission(w http.ResponseWriter, r *http.Request) (cr
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	defer r.Body.Close()
 
+	// Read the whole body first. It is needed twice: once for the strict
+	// decode below, and once to see which fields the client really sent
+	// (rejectEmptyJSONFields). The limit above keeps it at 1 MiB or less.
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return createSubmissionRequest{}, err
+	}
+
 	var req createSubmissionRequest
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		return createSubmissionRequest{}, err
@@ -138,6 +147,11 @@ func (s *Server) parseJSONSubmission(w http.ResponseWriter, r *http.Request) (cr
 	// Fail closed if trailing tokens exist after the first JSON object.
 	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return createSubmissionRequest{}, errors.New("unexpected trailing data after JSON object")
+	}
+	// Fail closed on a field that was sent as null or as an empty string.
+	// It runs last, so a malformed body is still reported as malformed.
+	if err := rejectEmptyJSONFields(body); err != nil {
+		return createSubmissionRequest{}, err
 	}
 	return req, nil
 }

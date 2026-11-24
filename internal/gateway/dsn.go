@@ -86,5 +86,7 @@ func ensureSQLiteDir(dsn string) error {
 	if dir == "." || dir == "" {
 		return nil
 	}
-	return os.MkdirAll(dir, 0o750)
+	// The path comes from the storage DSN, which the operator sets in the
+	// configuration. No request can change it.
+	return os.MkdirAll(dir, 0o750) //nolint:gosec // G703: trusted path, see above.
 }
