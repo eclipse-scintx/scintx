@@ -38,6 +38,11 @@ WHERE status IN ('accepted', 'running') AND (lease_until = '' OR lease_until <= 
 ORDER BY attempts ASC, accepted_at ASC
 LIMIT 1
 FOR UPDATE SKIP LOCKED`
+
+	// claimUpdateSQLite rechecks the row the SELECT just read. See
+	// claimOneCandidate for why status and lease are in the WHERE.
+	claimUpdateSQLite   = `UPDATE submissions SET status = ?, attempts = ?, lease_until = ?, completed_at = ?, payload_json = ? WHERE id = ? AND attempts = ? AND status IN ('accepted', 'running') AND (lease_until = '' OR lease_until <= ?)`
+	claimUpdatePostgres = `UPDATE submissions SET status = $1, attempts = $2, lease_until = $3, completed_at = $4, payload_json = $5 WHERE id = $6 AND attempts = $7 AND status IN ('accepted', 'running') AND (lease_until = '' OR lease_until <= ` + pgClockOpen + `$8` + pgClockClose + `)`
 )
 
 // ClaimNextSubmission atomically claims the next eligible submission in
@@ -141,14 +146,18 @@ func (s *SQLStore) claimOneCandidate(ctx context.Context, now time.Time, leaseDu
 		return api.Submission{}, false, false, err
 	}
 
-	// Guard the UPDATE with the previous attempt number so concurrent processes
-	// cannot claim the same attempt simultaneously.
-	updateQuery := `UPDATE submissions SET status = ?, attempts = ?, lease_until = ?, completed_at = ?, payload_json = ? WHERE id = ? AND attempts = ?`
+	// Re-check status, attempt, and lease on the UPDATE. SQLite claims also
+	// take the write lock at BEGIN (_txlock=immediate), and PostgreSQL holds
+	// FOR UPDATE from the SELECT. The predicate is what makes a lost race
+	// change no row if that lock is ever missing: a "completed" row must not
+	// be written back to "running", and a lease renewed in between must not
+	// be overwritten.
+	updateQuery := claimUpdateSQLite
 	if s.postgres {
-		updateQuery = `UPDATE submissions SET status = $1, attempts = $2, lease_until = $3, completed_at = $4, payload_json = $5 WHERE id = $6 AND attempts = $7`
+		updateQuery = claimUpdatePostgres
 	}
 	res, err := tx.ExecContext(ctx, updateQuery,
-		string(sub.Status), sub.Attempts, newLease, completedAt, string(newPayload), sub.ID, prevAttempts,
+		string(sub.Status), sub.Attempts, newLease, completedAt, string(newPayload), sub.ID, prevAttempts, s.leaseArg(now, 0),
 	)
 	if err != nil {
 		return api.Submission{}, false, false, err

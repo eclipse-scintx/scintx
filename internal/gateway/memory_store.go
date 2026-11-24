@@ -79,6 +79,10 @@ func (s *MemoryStore) ClaimNextSubmission(_ context.Context, now time.Time, leas
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// nowUTC stamps completedAt. Lease math uses now itself. now.UTC() strips
+	// the monotonic clock, and the heartbeat's deadline keeps that clock. A
+	// wall-clock step would then expire this lease while the worker still
+	// had time left, and a second worker would claim the same submission.
 	nowUTC := now.UTC()
 	for {
 		var (
@@ -92,7 +96,7 @@ func (s *MemoryStore) ClaimNextSubmission(_ context.Context, now time.Time, leas
 				delete(s.pending, id)
 				continue
 			}
-			if !entry.leaseUntil.IsZero() && entry.leaseUntil.After(nowUTC) {
+			if !entry.leaseUntil.IsZero() && entry.leaseUntil.After(now) {
 				continue
 			}
 			if !found || isHigherPriorityCandidate(entry.sub, id, bestEntry.sub, bestID) {
@@ -124,7 +128,7 @@ func (s *MemoryStore) ClaimNextSubmission(_ context.Context, now time.Time, leas
 		sub.Attempts++
 		s.submissions[bestID] = memoryEntry{
 			sub:        sub,
-			leaseUntil: nowUTC.Add(leaseDuration),
+			leaseUntil: now.Add(leaseDuration),
 		}
 		return sub, true, nil
 	}

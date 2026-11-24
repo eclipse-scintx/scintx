@@ -29,8 +29,11 @@ import (
 // statement_timestamp() is the moment the server received the statement. It
 // does not change while the statement runs, so one statement sees one time.
 //
-// SQLite has no clock of its own. It runs inside the gateway process, so the
-// gateway's clock is the only clock there is, and it is used as before.
+// SQLite has no clock of its own. A lease is stored as a wall-clock string
+// (formatTimestampUTC). That string cannot carry the monotonic stopwatch the
+// heartbeat uses. WallClockLeases tells the heartbeat to stop when the wall
+// clock passes the deadline too, so a forward step cannot leave a worker
+// running after the stored lease has already expired.
 const (
 	pgClockOpen  = `(to_char((statement_timestamp() + make_interval(secs => `
 	pgClockClose = `)) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') || '000Z')`
@@ -90,6 +93,12 @@ func (s *SQLStore) execLeaseUpdate(ctx context.Context, action, id string, attem
 	}
 	return nil
 }
+
+// WallClockLeases reports whether lease expiry follows the gateway wall clock.
+// SQLite stores lease_until as a timestamp string, so it does. PostgreSQL
+// does not: the database clock plus a duration is the authority, and a step
+// of the gateway's wall clock must not expire that lease.
+func (s *SQLStore) WallClockLeases() bool { return !s.postgres }
 
 // RenewLease atomically extends lease_until for an active submission claim
 // only if the row is still in "running" state with the matching attempt number.

@@ -37,7 +37,9 @@ func (s *MemoryStore) updateLease(id string, attempt int, action string, next fu
 // It never moves the lease back. A renewal that arrives late, after a newer
 // one, must not shorten the lease (see the Store interface).
 func (s *MemoryStore) RenewLease(_ context.Context, id string, attempt int, now time.Time, leaseDuration time.Duration) error {
-	renewed := now.UTC().Add(leaseDuration)
+	// Keep the monotonic clock. now.UTC() would drop it, and the lease would
+	// follow the wall clock while the heartbeat follows the stopwatch.
+	renewed := now.Add(leaseDuration)
 	return s.updateLease(id, attempt, "renew", func(current time.Time) time.Time {
 		if current.After(renewed) {
 			return current // The stored lease is later. Keep it.
@@ -50,7 +52,7 @@ func (s *MemoryStore) RenewLease(_ context.Context, id string, attempt int, now 
 // long. It may move the lease back (see the Store interface).
 func (s *MemoryStore) DelayRetry(_ context.Context, id string, attempt int, now time.Time, delay time.Duration) error {
 	return s.updateLease(id, attempt, "delay retry of", func(time.Time) time.Time {
-		return now.UTC().Add(delay)
+		return now.Add(delay)
 	})
 }
 

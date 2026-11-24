@@ -42,7 +42,13 @@ func isPostgresDSN(dsn string) bool {
 // corrupt the database. It survives a crash or restart of the gateway process
 // with nothing lost. The one trade-off: if the whole machine loses power, the
 // last few committed writes may be rolled back.
-const sqlitePragmaQuery = "_pragma=busy_timeout(5000)" +
+// _txlock=immediate makes BEGIN take the write lock at the start of the
+// transaction. Claim reads a row and then updates it. With the default
+// deferred lock, another process can commit a "completed" write between
+// those two statements. Immediate locking closes that window. The claim
+// UPDATE also rechecks status and lease, so a lost race changes no row.
+const sqlitePragmaQuery = "_txlock=immediate" +
+	"&_pragma=busy_timeout(5000)" +
 	"&_pragma=journal_mode(WAL)" +
 	"&_pragma=synchronous(NORMAL)" +
 	"&_pragma=temp_store(MEMORY)" +

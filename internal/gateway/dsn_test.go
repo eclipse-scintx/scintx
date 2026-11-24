@@ -33,7 +33,7 @@ func TestIsPostgresDSN(t *testing.T) {
 
 func TestSQLiteDSNWithPragmas(t *testing.T) {
 	plain := sqliteDSNWithPragmas("file:data/scintx.db")
-	if !strings.HasPrefix(plain, "file:data/scintx.db?_pragma=busy_timeout(5000)") {
+	if !strings.HasPrefix(plain, "file:data/scintx.db?_txlock=immediate&_pragma=busy_timeout(5000)") {
 		t.Fatalf("unexpected DSN: %s", plain)
 	}
 	// The caller's own query string goes last, so the operator's pragma wins.
