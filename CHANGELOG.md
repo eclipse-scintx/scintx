@@ -13,27 +13,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default `data/blobs`). Uploads are streamed to disk with constant memory,
   kept only until their submission is `completed` or `failed`, and swept
   after a crash.
-- OSV provider: `vscode-extension` PURL support with ecosystem fallback when
-  PURL-only queries miss (e.g. Open VSX malware indexed as
-  `VSCode:https://open-vsx.org` / `publisher.name`).
-- `SCINTX_MAX_ARTIFACT_BYTES` — configurable `POST /v1/artifacts` body cap
-  (default 1 GiB); over-limit returns `413 artifact_too_large`.
-- Reference HTTP gateway (`scintx serve`) with worker pool, optional YAML policy, and CloudEvent webhooks.
-- In-memory store by default (ephemeral forwarder). Optional durable `sqlite` / `postgres`.
-- Live providers: OSV.dev (`osv`) and Sonatype OSS Index (`ossindex`).
-- Offline stubs (`stub-osv`, `stub-secrets`) for tests and demos.
-- Cross-provider finding merge (CVE-anchored) and `GET /v1/submissions/{id}/merged`.
-- `scintx auth <provider>` — OS keyring (file fallback) for outbound provider credentials.
-- Optional anonymous adjudication forwarding (`SCINTX_FORWARD_ADJUDICATIONS`, off by default).
-- Artifact blob upload (`POST /v1/artifacts`) and hydration of local blob bytes onto `Artifact.Content` before `Assess` (not sent to PURL APIs).
-- JSON Schema 2020-12 documents, OpenAPI 3.1, and README quickstart.
-- CI (`make check`) and GitHub Actions workflows.
+- Containerized HTTP gateway (`scintx serve`) with `POST /v1/submissions`,
+  `GET /v1/submissions/{id}`, `/healthz`, `/readyz`, and the built-in
+  `scintx health` probe for distroless containers.
+- Fail-closed validation for exclusive artifact inputs (`purl`, structured
+  `digest` with `algorithm` and `value`, or streamed `content` upload).
+- Persistent SQLite and PostgreSQL submission stores (`SCINTX_DATABASE_URL`)
+  with lease-based work claiming, exponential retry backoff, and concurrent
+  worker pool (`SCINTX_WORKERS`).
+- Optional inbound Bearer token authentication (`SCINTX_AUTH_BEARER_TOKEN`
+  and `*_FILE` secret mounts).
+- JSON Schema 2020-12 documents (`schema/`), deterministic offline demo
+  (`make demo`), and CI workflows.
 - EPL-2.0 license.
 
 ### Security
 
 - Require Go 1.26.10 (was 1.26.0) to pick up the fix for the compromised
   eMudhra intermediate CA keys (Oct 2026). CI reads the version from `go.mod`.
+- Hash bearer tokens with SHA-256 before `subtle.ConstantTimeCompare` so
+  authentication timing does not leak the configured token length.
 
 ### Changed
 
@@ -41,8 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can no longer shorten it. Retry backoff uses the new `Store.DelayRetry`.
 - On PostgreSQL, lease times come from the database clock. Gateways only
   send durations, so gateway clocks that disagree no longer matter.
-- Artifact upload limit raised from 32 MiB to 1 GiB (override via `SCINTX_MAX_ARTIFACT_BYTES`).
-- Artifact read failures now include the underlying error detail; size breaches
-  use problem title `artifact_too_large` instead of a generic 400.
+- Updated `ArtifactInput` to use structured `Digest` (`algorithm` and `value`),
+  `contentMeta` JSON key, and `OpenContent` stream reader callback (#68, #70).
 
 [Unreleased]: https://github.com/eclipse-scintx/scintx/commits/HEAD

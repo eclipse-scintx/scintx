@@ -7,7 +7,10 @@
   "required": ["artifact"],
   "properties": {
     "artifact": {
-      "$ref": "artifact.schema.json"
+      "$ref": "artifact.schema.json",
+      "not": {
+        "required": ["contentMeta"]
+      }
     }
   }
 }

@@ -71,6 +71,18 @@ FIXTURES = [
         True,
     ),
     (
+        # Raw content must be uploaded via multipart/form-data. A JSON create
+        # request with server-computed contentMeta must be rejected.
+        "submission-create.schema.json",
+        "submission-create with contentMeta (should fail)",
+        {
+            "artifact": {
+                "contentMeta": {"sha256": "a" * 64, "sizeBytes": 128}
+            }
+        },
+        False,
+    ),
+    (
         "submission.schema.json",
         "submission completed response",
         {

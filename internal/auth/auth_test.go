@@ -33,6 +33,17 @@ func TestBearerAuthMiddleware(t *testing.T) {
 		t.Fatalf("got %d without token, want 401", recUnauth.Code)
 	}
 
+	// Wrong token (both shorter and same length) returns 401.
+	for _, bad := range []string{"short", "secret-gateway-tokeX"} {
+		reqBad := httptest.NewRequest(http.MethodGet, "/v1/submissions/123", nil)
+		reqBad.Header.Set("Authorization", "Bearer "+bad)
+		recBad := httptest.NewRecorder()
+		handler.ServeHTTP(recBad, reqBad)
+		if recBad.Code != http.StatusUnauthorized {
+			t.Fatalf("got %d with invalid token %q, want 401", recBad.Code, bad)
+		}
+	}
+
 	// Valid token succeeds.
 	reqAuth := httptest.NewRequest(http.MethodGet, "/v1/submissions/123", nil)
 	reqAuth.Header.Set("Authorization", "Bearer secret-gateway-token")

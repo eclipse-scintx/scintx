@@ -7,6 +7,7 @@
 package auth
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"net/http"
@@ -22,6 +23,11 @@ func Middleware(expectedToken string, next http.Handler) http.Handler {
 	if token == "" {
 		return next
 	}
+	// Hash the expected token once with SHA-256. subtle.ConstantTimeCompare
+	// returns immediately when two byte slices have different lengths, which
+	// can leak the secret token's length through timing. Comparing two fixed
+	// 32-byte SHA-256 digests always runs in constant time for any input length.
+	expectedHash := sha256.Sum256([]byte(token))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
@@ -36,7 +42,8 @@ func Middleware(expectedToken string, next http.Handler) http.Handler {
 			return
 		}
 		provided := strings.TrimSpace(strings.TrimPrefix(hdr, prefix))
-		if subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
+		providedHash := sha256.Sum256([]byte(provided))
+		if subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) != 1 {
 			writeUnauthorized(w, "invalid Bearer token")
 			return
 		}
