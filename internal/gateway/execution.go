@@ -23,6 +23,19 @@ import (
 // log line to the submission by its id.
 const publicFailureReason = "submission execution failed"
 
+// ErrNoExecutor is the outcome of running a submission when no execution hook
+// (no provider adapter) is installed.
+//
+// This is a fail-closed rule. Before, such a submission was marked
+// "completed" although nothing had checked the artifact, and a client could
+// read that as "clean". Now it is marked "failed" with noExecutorReason, so
+// no artifact is ever reported as done without a real scan.
+var ErrNoExecutor = errors.New("no provider adapters are configured")
+
+// noExecutorReason is the public "error" text for ErrNoExecutor. It names no
+// internal detail, so it is safe to show to a client.
+const noExecutorReason = "no provider adapters are configured; the artifact was not scanned"
+
 // ExecuteClaimedSubmission runs a claimed submission under a bounded per-attempt
 // timeout while periodically renewing its lease every leaseDuration/3.
 // claimedAt is the time passed to ClaimNextSubmission for this claim.
@@ -34,6 +47,8 @@ const publicFailureReason = "submission execution failed"
 //     comes before the shutdown and timeout checks on purpose. A run that
 //     finished right at the deadline, or right as a shutdown began, used to
 //     be thrown away or marked failed.
+//     With no hook installed at all, the submission is failed instead
+//     (ErrNoExecutor), because nothing scanned it.
 //  3. Parent context canceled (graceful shutdown timeout):
 //     release the active lease immediately so the next gateway instance can
 //     claim the submission with zero wait delay. The attempt is not counted.
@@ -78,6 +93,9 @@ func (o *Orchestrator) ExecuteClaimedSubmission(ctx context.Context, sub api.Sub
 			}
 		}
 		hookErr = o.execHook(execCtx, hookSub)
+	} else {
+		// Nothing can scan this artifact. Fail closed (see ErrNoExecutor).
+		hookErr = ErrNoExecutor
 	}
 	// Read the timeout state first: stopping the heartbeat cancels execCtx.
 	timedOut := errors.Is(execCtx.Err(), context.DeadlineExceeded)
@@ -91,6 +109,11 @@ func (o *Orchestrator) ExecuteClaimedSubmission(ctx context.Context, sub api.Sub
 		log.Warn("lease lost; abandoning this attempt without writing a result")
 	case hookErr == nil:
 		o.completeSubmission(sub)
+	case errors.Is(hookErr, ErrNoExecutor):
+		// Fail at once. A retry cannot help, because no adapter will
+		// appear between attempts.
+		log.Warn("failing submission: no provider adapters are configured")
+		o.failSubmission(&sub, noExecutorReason)
 	case ctx.Err() != nil:
 		o.releaseForShutdown(sub)
 	case timedOut:

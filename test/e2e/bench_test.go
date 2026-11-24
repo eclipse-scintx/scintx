@@ -41,7 +41,7 @@ func BenchmarkHTTPSQLiteSequential(b *testing.B) {
 	}
 	defer store.Close()
 
-	orch := gateway.NewOrchestrator(cfg, store)
+	orch := gateway.NewOrchestratorWithExecutor(cfg, store, nil, succeedingHook)
 	defer orch.Shutdown()
 	srv := server.New(cfg, store, orch)
 	ts := httptest.NewServer(srv.Routes())
@@ -78,7 +78,7 @@ func BenchmarkHTTPSQLiteParallel(b *testing.B) {
 	}
 	defer store.Close()
 
-	orch := gateway.NewOrchestrator(cfg, store)
+	orch := gateway.NewOrchestratorWithExecutor(cfg, store, nil, succeedingHook)
 	defer orch.Shutdown()
 	srv := server.New(cfg, store, orch)
 	ts := httptest.NewServer(srv.Routes())
@@ -114,7 +114,7 @@ func BenchmarkHTTPMemoryParallel(b *testing.B) {
 	store := gateway.NewMemoryStore()
 	defer store.Close()
 
-	orch := gateway.NewOrchestrator(cfg, store)
+	orch := gateway.NewOrchestratorWithExecutor(cfg, store, nil, succeedingHook)
 	defer orch.Shutdown()
 	srv := server.New(cfg, store, orch)
 	ts := httptest.NewServer(srv.Routes())

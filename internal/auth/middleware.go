@@ -35,13 +35,17 @@ func Middleware(expectedToken string, next http.Handler) http.Handler {
 			return
 		}
 
+		// The auth scheme name is case-insensitive (RFC 7235, section 2.1),
+		// so "bearer x" and "BEARER x" are valid. Before, only the exact
+		// text "Bearer " was accepted and other clients were refused.
+		// The token itself is still compared exactly.
 		hdr := strings.TrimSpace(r.Header.Get("Authorization"))
-		const prefix = "Bearer "
-		if !strings.HasPrefix(hdr, prefix) {
+		scheme, rest, found := strings.Cut(hdr, " ")
+		if !found || !strings.EqualFold(scheme, "Bearer") {
 			writeUnauthorized(w, "missing Bearer token in Authorization header")
 			return
 		}
-		provided := strings.TrimSpace(strings.TrimPrefix(hdr, prefix))
+		provided := strings.TrimSpace(rest)
 		providedHash := sha256.Sum256([]byte(provided))
 		if subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) != 1 {
 			writeUnauthorized(w, "invalid Bearer token")

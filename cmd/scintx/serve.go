@@ -29,8 +29,8 @@ func warnAboutRiskyDefaults(cfg *config.Config, orch *gateway.Orchestrator) {
 			"set SCINTX_AUTH_BEARER_TOKEN or SCINTX_AUTH_BEARER_TOKEN_FILE")
 	}
 	if !orch.HasExecutor() {
-		slog.Warn("no provider adapters are configured: submissions reach \"completed\" without being scanned; " +
-			"\"completed\" is not a security verdict in this release")
+		slog.Warn("no provider adapters are configured: every submission will end as \"failed\" " +
+			"(fail closed), because nothing can scan the artifact")
 	}
 }
 

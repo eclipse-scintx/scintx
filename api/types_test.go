@@ -14,6 +14,51 @@ import (
 	"time"
 )
 
+// TestParseDigest checks the multipart "<algorithm>:<hex>" text field.
+// The key rule: an empty field still gives a non-nil Digest. Then validation
+// counts it as "provided" and rejects it. A nil result would let an empty
+// digest field sent next to a purl slip through unnoticed.
+func TestParseDigest(t *testing.T) {
+	hex64 := strings.Repeat("a", 64)
+
+	d := ParseDigest("sha256:" + hex64)
+	if d == nil || d.Algorithm != "sha256" || d.Value != hex64 {
+		t.Fatalf("unexpected result for a valid digest: %+v", d)
+	}
+
+	// Surrounding spaces are trimmed.
+	if d := ParseDigest("  sha256:" + hex64 + "  "); d == nil || d.Value != hex64 {
+		t.Fatalf("expected trimmed value, got %+v", d)
+	}
+
+	// Only the first colon splits, so the value keeps any later colon.
+	if d := ParseDigest("sha256:ab:cd"); d == nil || d.Value != "ab:cd" {
+		t.Fatalf("expected split on the first colon only, got %+v", d)
+	}
+
+	// No colon: the text becomes the algorithm and the value stays empty.
+	if d := ParseDigest("sha256"); d == nil || d.Algorithm != "sha256" || d.Value != "" {
+		t.Fatalf("unexpected result for text with no colon: %+v", d)
+	}
+
+	// Empty or blank input is never nil.
+	for _, in := range []string{"", "   "} {
+		d := ParseDigest(in)
+		if d == nil {
+			t.Fatalf("ParseDigest(%q) returned nil", in)
+		}
+		if *d != (Digest{}) {
+			t.Fatalf("ParseDigest(%q) = %+v, want an empty Digest", in, *d)
+		}
+	}
+
+	// An empty digest next to a purl must fail: that is two inputs.
+	in := ArtifactInput{PURL: "pkg:npm/lodash@4.17.20", Digest: ParseDigest("")}
+	if _, err := ValidateAndNormalizeArtifact(in, 1024); !errors.Is(err, ErrValidation) {
+		t.Fatalf("expected ErrValidation for purl plus empty digest, got %v", err)
+	}
+}
+
 func TestValidateAndNormalizeArtifact(t *testing.T) {
 	// Empty artifact must fail validation.
 	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{}, 1024); err == nil {

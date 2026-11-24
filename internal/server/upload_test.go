@@ -6,6 +6,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -24,6 +25,10 @@ import (
 // These tests cover what happens to the bytes of an uploaded file: they are
 // stored for the provider adapters, and they never outlive their submission.
 
+// succeedingHook stands in for a provider adapter that always finishes. With
+// no hook a submission fails closed, so tests that expect "completed" need it.
+func succeedingHook(context.Context, api.Submission) error { return nil }
+
 // newTestBlobs opens a file blob store in a fresh temporary directory.
 func newTestBlobs(t *testing.T) *blobtest.Store {
 	t.Helper()
@@ -37,7 +42,7 @@ func newUploadServer(t *testing.T, blobs blob.Store, maxBytes int64) (http.Handl
 	cfg := config.Default()
 	cfg.Gateway.MaxContentBytes = maxBytes
 	store := gateway.NewMemoryStore()
-	orch := gateway.NewOrchestratorWithBlobs(cfg, store, blobs)
+	orch := gateway.NewOrchestratorWithExecutor(cfg, store, blobs, succeedingHook)
 	t.Cleanup(orch.Shutdown)
 	return New(cfg, store, orch).Routes(), orch
 }

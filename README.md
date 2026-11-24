@@ -114,8 +114,8 @@ curl -i -X POST http://127.0.0.1:8080/v1/submissions \
   - Multi-replica deployments must also mount one shared volume as the blob directory on every replica. Otherwise a worker on one replica cannot read a file that another replica received.
   - The blob directory has no size quota. Plan disk space for the largest upload (`gateway.maxContentBytes`, 64 MiB by default) times the number of submissions that can be queued or running at once.
   - Provider adapter execution, aggregation, and policy evaluation are staged in subsequent releases.
-  - **`completed` is not a security verdict yet.** No provider adapters run in this release, so every valid submission reaches `completed` without being scanned. The gateway logs a warning about this at startup.
-  - **Uploaded content is not scanned yet.** The bytes of a `content` upload are stored for the provider adapters, but no adapter runs in this release. So today a submission completes at once and its file is deleted right away. The submission record keeps only the SHA-256, size, filename, and media type.
+  - **The gateway fails closed: no submission can reach `completed` yet.** No provider adapters run in this release, so nothing can scan an artifact. Every valid submission therefore ends as `failed` with the error `no provider adapters are configured; the artifact was not scanned`. It is not retried. The gateway logs a warning about this at startup. A `completed` status will only appear once an adapter has actually run.
+  - **Uploaded content is not scanned yet.** The bytes of a `content` upload are stored for the provider adapters, but no adapter runs in this release. So today a submission fails closed at once and its file is deleted right away. The submission record keeps only the SHA-256, size, filename, and media type.
   - **Authentication is off by default.** Set `SCINTX_AUTH_BEARER_TOKEN` (or `SCINTX_AUTH_BEARER_TOKEN_FILE`) before exposing the gateway. The gateway logs a warning at startup when no token is set.
 
 ---

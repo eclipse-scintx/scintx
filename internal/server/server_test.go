@@ -28,7 +28,7 @@ func newTestServer(t *testing.T) (*Server, *gateway.Orchestrator) {
 		t.Fatalf("OpenStore failed: %v", err)
 	}
 	// A blob store is needed since uploads are stored (see upload_test.go).
-	orch := gateway.NewOrchestratorWithBlobs(cfg, store, newTestBlobs(t))
+	orch := gateway.NewOrchestratorWithExecutor(cfg, store, newTestBlobs(t), succeedingHook)
 	t.Cleanup(func() {
 		orch.Shutdown()
 		_ = store.Close()

@@ -13,6 +13,26 @@ import (
 	"time"
 )
 
+// readyzURL turns the listen address (the SCINTX_ADDR value) into the URL of
+// the local /readyz endpoint. It was split out of runHealth so a test can
+// call it without a running server.
+func readyzURL(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		addr = ":8080"
+	}
+	// Replace wildcard bind addresses ("", "0.0.0.0", "::") with 127.0.0.1
+	// so the probe can dial the local server on Windows and strict stacks.
+	if host, port, err := net.SplitHostPort(addr); err == nil {
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			addr = net.JoinHostPort("127.0.0.1", port)
+		}
+	} else if strings.HasPrefix(addr, ":") {
+		addr = "127.0.0.1" + addr
+	}
+	return "http://" + addr + "/readyz"
+}
+
 // runHealth probes the gateway's /readyz endpoint.
 // It allows a minimal distroless container image without curl or a shell
 // to execute container liveness and readiness healthchecks directly.
@@ -22,20 +42,7 @@ func runHealth(args []string) error {
 		target = strings.TrimSpace(args[0])
 	}
 	if target == "" {
-		addr := strings.TrimSpace(os.Getenv("SCINTX_ADDR"))
-		if addr == "" {
-			addr = ":8080"
-		}
-		// Replace wildcard bind addresses ("", "0.0.0.0", "::") with 127.0.0.1
-		// so the probe can dial the local server on Windows and strict stacks.
-		if host, port, err := net.SplitHostPort(addr); err == nil {
-			if host == "" || host == "0.0.0.0" || host == "::" {
-				addr = net.JoinHostPort("127.0.0.1", port)
-			}
-		} else if strings.HasPrefix(addr, ":") {
-			addr = "127.0.0.1" + addr
-		}
-		target = "http://" + addr + "/readyz"
+		target = readyzURL(os.Getenv("SCINTX_ADDR"))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

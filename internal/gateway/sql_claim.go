@@ -49,15 +49,17 @@ func (s *SQLStore) ClaimNextSubmission(ctx context.Context, now time.Time, lease
 		maxAttempts = DefaultMaxAttempts
 	}
 	for {
-		sub, exhausted, found, err := s.claimOneCandidate(ctx, now, leaseDuration, maxAttempts)
+		sub, tryNext, found, err := s.claimOneCandidate(ctx, now, leaseDuration, maxAttempts)
 		if err != nil {
 			return api.Submission{}, false, err
 		}
 		if !found {
 			return api.Submission{}, false, nil
 		}
-		if exhausted {
-			// Candidate exceeded maxAttempts and was marked failed; check next candidate.
+		if tryNext {
+			// This candidate is not ours to run: it was marked failed
+			// (out of attempts) or another worker claimed it first. Look at
+			// the next candidate.
 			continue
 		}
 		return sub, true, nil
@@ -66,6 +68,17 @@ func (s *SQLStore) ClaimNextSubmission(ctx context.Context, now time.Time, lease
 
 // RenewLease, DelayRetry and ReleaseLease are in sql_lease.go.
 
+// claimOneCandidate looks at the single best candidate row. It returns:
+//
+//   - the claimed submission,
+//   - tryNext: true when the candidate was NOT claimed for running, so the
+//     caller should look at the next row. That happens when the candidate
+//     was out of attempts (it is marked failed here) or when another worker
+//     changed the row first (the guarded UPDATE touched no row).
+//     Before, this flag was called "exhausted" and was also set for the lost
+//     race, which was misleading.
+//   - found: false when no row is claimable at all,
+//   - an error.
 func (s *SQLStore) claimOneCandidate(ctx context.Context, now time.Time, leaseDuration time.Duration, maxAttempts int) (api.Submission, bool, bool, error) {
 	// nowUTC only stamps the submission's own timestamps (such as
 	// completedAt). The lease does not use it: see leaseArg.
@@ -145,11 +158,14 @@ func (s *SQLStore) claimOneCandidate(ctx context.Context, now time.Time, leaseDu
 		return api.Submission{}, false, false, err
 	}
 	if rows == 0 {
+		// Another worker changed the row first. Skip it: tryNext is true.
 		return api.Submission{}, true, true, nil
 	}
 	if err := tx.Commit(); err != nil {
 		return api.Submission{}, false, false, err
 	}
+	// tryNext is true here only when the candidate was failed for running
+	// out of attempts. Then the caller must not run it.
 	return sub, exhausted, true, nil
 }
 

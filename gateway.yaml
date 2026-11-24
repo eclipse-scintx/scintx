@@ -13,6 +13,7 @@ gateway:
 
 storage:
   # Persistent SQLite file by default; also accepts "postgres://..." or "memory".
+  # SQLite supports ONE gateway process. Use PostgreSQL to run several.
   dsn: "file:data/scintx.db"
   # Directory for uploaded content. A file stays here only until its
   # submission is finished. Gateways that share one database must share it.

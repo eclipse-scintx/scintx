@@ -9,6 +9,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,11 @@ import (
 	"github.com/eclipse-scintx/scintx/internal/server"
 )
 
+// succeedingHook stands in for a provider adapter that always finishes. With
+// no hook a submission fails closed, so tests and benchmarks that expect the
+// "completed" path install it.
+func succeedingHook(context.Context, api.Submission) error { return nil }
+
 func TestGatewayE2E(t *testing.T) {
 	cfg := config.Default()
 	dsn := "file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "e2e.db"))
@@ -29,7 +35,7 @@ func TestGatewayE2E(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	orch1 := gateway.NewOrchestrator(cfg, store1)
+	orch1 := gateway.NewOrchestratorWithExecutor(cfg, store1, nil, succeedingHook)
 	srv1 := server.New(cfg, store1, orch1)
 
 	ts1 := httptest.NewServer(srv1.Routes())
@@ -71,7 +77,7 @@ func TestGatewayE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store2.Close()
-	orch2 := gateway.NewOrchestrator(cfg, store2)
+	orch2 := gateway.NewOrchestratorWithExecutor(cfg, store2, nil, succeedingHook)
 	defer orch2.Shutdown()
 	srv2 := server.New(cfg, store2, orch2)
 	ts2 := httptest.NewServer(srv2.Routes())

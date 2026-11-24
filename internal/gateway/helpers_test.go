@@ -15,6 +15,11 @@ import (
 // hookFunc is the signature of the test-only execution hook.
 type hookFunc = func(ctx context.Context, sub api.Submission) error
 
+// succeedingHook is a hook for a provider that always finishes its work.
+// Tests that only need a submission to reach "completed" install it. With
+// no hook at all, a submission fails closed (see ErrNoExecutor).
+func succeedingHook(context.Context, api.Submission) error { return nil }
+
 // withTestSettings returns an option that fixes the lease duration, the
 // per-attempt timeout, and the execution hook before any worker starts.
 // A zero duration keeps the default value.

@@ -70,11 +70,12 @@ printf '%s\n' "${SUB_JSON}"
 
 SUB_ID="$(printf '%s' "${SUB_JSON}" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
 
-# Poll until submission reaches completed status.
+# Poll until the submission reaches a final status ("completed" or "failed").
+STATUS=""
 for _ in $(seq 1 30); do
   STATUS_JSON="$(curl -fsS "${DEMO_URL}/v1/submissions/${SUB_ID}")"
   STATUS="$(printf '%s' "${STATUS_JSON}" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"
-  if [[ "${STATUS}" == "completed" ]]; then
+  if [[ "${STATUS}" == "completed" || "${STATUS}" == "failed" ]]; then
     break
   fi
   sleep 0.1
@@ -82,6 +83,13 @@ done
 
 log "4. Retrieve submission status (GET /v1/submissions/${SUB_ID})"
 printf '%s\n' "${STATUS_JSON}"
+# This release has no provider adapters, so nothing can scan the artifact.
+# The gateway fails closed: the submission must end as "failed" with a clear
+# reason. It must never report "completed" for an artifact nobody checked.
+if [[ "${STATUS}" != "failed" ]] || [[ "${STATUS_JSON}" != *"no provider adapters are configured"* ]]; then
+  die "expected a fail-closed result (failed, no provider adapters), got status=${STATUS:-none}"
+fi
+log "submission failed closed as expected: no provider adapter can scan it yet"
 
 log "5. Restart gateway and verify submission persists in SQLite across restart"
 kill "${GW_PID}" >/dev/null 2>&1 || true

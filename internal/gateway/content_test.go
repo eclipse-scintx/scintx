@@ -133,7 +133,7 @@ func TestContentSurvivesGracefulShutdown(t *testing.T) {
 	}
 
 	// The next instance finishes the scan, and only then are the bytes deleted.
-	next := newOrchestrator(config.Default(), store, withBlobs(blobs))
+	next := newOrchestrator(config.Default(), store, withTestSettings(0, 0, succeedingHook), withBlobs(blobs))
 	defer next.Shutdown()
 	waitForStatus(t, store, sub.ID, api.SubmissionCompleted)
 	expectNoLeftovers(t, blobs)

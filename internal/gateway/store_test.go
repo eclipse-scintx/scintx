@@ -69,7 +69,7 @@ func TestSQLStoreLeaseRecoveryAndAttemptCap(t *testing.T) {
 	}
 	defer store2.Close()
 
-	orch := NewOrchestrator(config.Default(), store2)
+	orch := NewOrchestratorWithExecutor(config.Default(), store2, nil, succeedingHook)
 	defer orch.Shutdown()
 	orch.Wait()
 

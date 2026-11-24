@@ -103,7 +103,7 @@ func TestMultipartUploadIsHashedAndSizeLimited(t *testing.T) {
 	cfg := config.Default()
 	cfg.Gateway.MaxContentBytes = 16 // A tiny limit keeps the test fast.
 	store := gateway.NewMemoryStore()
-	orch := gateway.NewOrchestratorWithBlobs(cfg, store, newTestBlobs(t))
+	orch := gateway.NewOrchestratorWithExecutor(cfg, store, newTestBlobs(t), succeedingHook)
 	t.Cleanup(orch.Shutdown)
 	handler := New(cfg, store, orch).Routes()
 

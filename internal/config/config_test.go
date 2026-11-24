@@ -62,6 +62,36 @@ storage:
 	}
 }
 
+// TestRevisionIgnoresDSN checks that the config revision (which is logged)
+// does not depend on the database DSN, because a DSN can hold a password.
+// A setting that is not secret must still change the revision.
+func TestRevisionIgnoresDSN(t *testing.T) {
+	// Two different DSNs, neither shaped like a credential. The revision
+	// must stay the same when only the DSN changes.
+	t.Setenv("SCINTX_DATABASE_URL", "postgres://db-one.example/scintx")
+	first, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SCINTX_DATABASE_URL", "postgres://db-two.example/scintx")
+	second, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Revision != second.Revision {
+		t.Fatalf("revision changed with the DSN: %q vs %q", first.Revision, second.Revision)
+	}
+
+	t.Setenv("SCINTX_INSTANCE_ID", "another-instance")
+	third, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Revision == second.Revision {
+		t.Fatal("revision did not change when the instance id changed")
+	}
+}
+
 // TestBlobDirDefaultAndOverride covers the blob directory setting: it has a
 // default, and the environment wins over the file. (An empty value is
 // refused when the directory is opened. The blob package tests that.)

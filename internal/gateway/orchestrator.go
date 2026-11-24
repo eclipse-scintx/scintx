@@ -33,7 +33,8 @@ type Orchestrator struct {
 	// execHook runs one claimed submission. It must return nil only when the
 	// work really finished, and an error in every other case (including when
 	// its context is canceled). A nil hook means no provider adapters are
-	// wired in yet, so the submission completes without being scanned.
+	// wired in yet. Then every submission fails closed (see ErrNoExecutor).
+	// Before, it completed without being scanned.
 	execHook func(ctx context.Context, sub api.Submission) error
 	// blobs holds the bytes of uploaded content until its submission is
 	// finished (see content.go). Nil means content uploads are disabled.
@@ -57,7 +58,7 @@ type Orchestrator struct {
 }
 
 // HasExecutor reports whether an execution hook is installed. The serve
-// command uses it to warn that "completed" does not yet mean "scanned".
+// command uses it to warn that every submission fails closed without one.
 func (o *Orchestrator) HasExecutor() bool { return o.execHook != nil }
 
 // orchestratorOption adjusts an Orchestrator before its workers start.
@@ -75,6 +76,21 @@ func NewOrchestrator(cfg *config.Config, store Store) *Orchestrator {
 // never upload content did not have to change. The serve command uses it.
 func NewOrchestratorWithBlobs(cfg *config.Config, store Store, blobs blob.Store) *Orchestrator {
 	return newOrchestrator(cfg, store, withBlobs(blobs))
+}
+
+// ExecFunc runs one claimed submission. It is what a provider adapter
+// plugs in. It must return nil only when the work really finished.
+type ExecFunc = func(ctx context.Context, sub api.Submission) error
+
+// NewOrchestratorWithExecutor is NewOrchestratorWithBlobs plus an execution
+// hook. blobs may be nil, which turns content uploads off.
+//
+// Without a hook, every submission fails closed (see ErrNoExecutor). So this
+// is the constructor that tests in other packages use to get a submission
+// to "completed". The hook is passed in here, and not set later, because the
+// workers read it without a lock once they start.
+func NewOrchestratorWithExecutor(cfg *config.Config, store Store, blobs blob.Store, hook ExecFunc) *Orchestrator {
+	return newOrchestrator(cfg, store, withBlobs(blobs), func(o *Orchestrator) { o.execHook = hook })
 }
 
 // newOrchestrator builds the orchestrator, applies opts, and only then starts

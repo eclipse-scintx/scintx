@@ -26,7 +26,7 @@ func TestOrchestratorSubmitAndStatus(t *testing.T) {
 	}
 	defer store.Close()
 
-	orch := NewOrchestrator(cfg, store)
+	orch := NewOrchestratorWithExecutor(cfg, store, nil, succeedingHook)
 	defer orch.Shutdown()
 
 	sub, err := orch.Submit(context.Background(), api.ArtifactInput{
@@ -52,6 +52,34 @@ func TestOrchestratorSubmitAndStatus(t *testing.T) {
 	}
 	if finalSub.Attempts != 1 {
 		t.Fatalf("expected attempts=1, got %d", finalSub.Attempts)
+	}
+}
+
+// TestNoExecutorFailsClosed checks the fail-closed rule. With no provider
+// adapter installed nothing can scan the artifact, so the submission must
+// end as "failed" with a clear public reason. It must never reach
+// "completed", and it must not be retried (no adapter will appear later).
+func TestNoExecutorFailsClosed(t *testing.T) {
+	store := NewMemoryStore()
+	orch := NewOrchestrator(config.Default(), store)
+	defer orch.Shutdown()
+	if orch.HasExecutor() {
+		t.Fatal("expected no executor on a plain orchestrator")
+	}
+
+	sub, err := orch.Submit(context.Background(), api.ArtifactInput{PURL: "pkg:npm/lodash@4.17.20"})
+	if err != nil {
+		t.Fatalf("Submit failed: %v", err)
+	}
+	got := waitForStatus(t, store, sub.ID, api.SubmissionFailed)
+	if got.Error != noExecutorReason {
+		t.Fatalf("got error %q, want %q", got.Error, noExecutorReason)
+	}
+	if got.Attempts != 1 {
+		t.Fatalf("expected exactly one attempt, got %d", got.Attempts)
+	}
+	if got.CompletedAt == nil {
+		t.Fatal("expected completedAt on a terminal submission")
 	}
 }
 

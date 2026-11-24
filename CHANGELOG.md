@@ -29,8 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Fail closed when no provider adapter is configured. Before, a submission
+  reached `completed` although nothing had scanned it. Now it ends as
+  `failed` with the error `no provider adapters are configured; the artifact
+  was not scanned`, and it is not retried. `completed` will only appear once
+  an adapter has really run.
 - Require Go 1.26.10 (was 1.26.0) to pick up the fix for the compromised
   eMudhra intermediate CA keys (Oct 2026). CI reads the version from `go.mod`.
+- The `configRevision` log value no longer includes the database DSN, which
+  can hold a password.
+- Bearer authentication now accepts the `Bearer` scheme in any letter case
+  (RFC 7235).
 - Hash bearer tokens with SHA-256 before `subtle.ConstantTimeCompare` so
   authentication timing does not leak the configured token length.
 

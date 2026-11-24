@@ -116,7 +116,15 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
-	raw, _ := yaml.Marshal(cfg)
+	// The revision ends up in the startup log, so it must not be a hash of
+	// anything secret. The DSN can hold a database password, and a short hash
+	// of it could help someone guess that password offline. So hash a copy
+	// with the DSN blanked out. (The bearer token has `yaml:"-"` and is never
+	// part of the hash.) The cost: two instances that differ ONLY in their
+	// DSN show the same revision.
+	forHash := *cfg
+	forHash.Storage.DSN = ""
+	raw, _ := yaml.Marshal(&forHash)
 	sum := sha256.Sum256(raw)
 	cfg.Revision = hex.EncodeToString(sum[:6])
 	return cfg, nil

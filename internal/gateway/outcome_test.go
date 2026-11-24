@@ -69,7 +69,7 @@ func TestGracefulShutdownsDoNotConsumeAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	orch := newOrchestrator(cfg, store)
+	orch := newOrchestrator(cfg, store, withTestSettings(0, 0, succeedingHook))
 	defer orch.Shutdown()
 	got := waitForStatus(t, store, id, api.SubmissionCompleted)
 	if got.Attempts != 5 || got.Interruptions != 4 {

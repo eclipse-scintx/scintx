@@ -52,6 +52,13 @@ func OpenSQLStore(dsn string) (*SQLStore, error) {
 	}
 	if !isPostgres {
 		// SQLite allows one writer at a time, so one connection is enough.
+		//
+		// This is also why SQLite is for ONE gateway process only. A claim
+		// opens a normal (deferred) transaction that reads first and writes
+		// second. When a second process holds the write lock in between,
+		// SQLite refuses the upgrade at once with SQLITE_BUSY, and the busy
+		// timeout does not help. Several gateway instances must share a
+		// PostgreSQL database instead (see the README).
 		db.SetMaxOpenConns(1)
 	} else {
 		db.SetMaxOpenConns(32)

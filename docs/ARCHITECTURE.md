@@ -12,7 +12,7 @@ The initial gateway establishes the core HTTP entrypoint, artifact validation, p
   - Accepts **exclusively one** artifact form per submission: `purl` (canonicalized Package URL), cryptographic `digest` (`sha256`, `sha384`, `sha512`), or raw `content` bytes (`multipart/form-data`).
   - Rejects empty, malformed, or multi-type artifacts with `422 Unprocessable Entity` (`application/problem+json`).
 - **Submission Lifecycle & Persistent Storage (`internal/gateway/`):**
-  - `POST /v1/submissions` creates a `Submission` (`schemaVersion: "1"`) in `accepted` state and transitions it through `running` to `completed`.
+  - `POST /v1/submissions` creates a `Submission` (`schemaVersion: "1"`) in `accepted` state and transitions it through `running` to `completed` once a provider adapter has finished. With no adapter installed (the case in this release) nothing can scan the artifact, so the submission fails closed: it ends as `failed` with a public reason and is not retried.
   - `GET /v1/submissions/{id}` returns the current submission status (`accepted`, `running`, `completed`, `failed`).
   - Submissions are persisted via `database/sql` (`internal/gateway/sql_store.go`) using either pure-Go SQLite (`modernc.org/sqlite`, default `file:data/scintx.db`) or PostgreSQL (`github.com/jackc/pgx/v5`, via `postgres://...` DSN).
 - **Health & Readiness Probes (`internal/server/`, `cmd/scintx/health.go`):**
