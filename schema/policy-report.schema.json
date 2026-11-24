@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scintx.example/schema/policy-report.schema.json",
+  "title": "PolicyReport",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "submissionId",
+    "aggregateReportId",
+    "policy",
+    "artifact",
+    "evaluationStatus",
+    "evidenceStatus",
+    "policyVerdict",
+    "violations",
+    "annotations"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1" },
+    "id": { "type": "string", "minLength": 1 },
+    "submissionId": { "type": "string", "minLength": 1 },
+    "aggregateReportId": { "type": "string", "minLength": 1 },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    },
+    "artifact": {
+      "$ref": "https://scintx.example/schema/artifact.schema.json"
+    },
+    "evaluationStatus": {
+      "type": "string",
+      "enum": ["completed", "failed"]
+    },
+    "evidenceStatus": {
+      "type": "string",
+      "enum": ["complete", "partial", "unavailable"]
+    },
+    "policyVerdict": {
+      "type": "string",
+      "enum": ["satisfied", "violated", "undetermined"]
+    },
+    "unresolvedRules": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "description", "matches"],
+        "properties": {
+          "id": { "type": "string" },
+          "description": { "type": "string" },
+          "matches": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["artifact", "evidence"],
+              "properties": {
+                "artifact": {
+                  "$ref": "https://scintx.example/schema/artifact.schema.json"
+                },
+                "dependencyPath": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["type", "provider"],
+                    "properties": {
+                      "type": { "type": "string", "enum": ["finding", "providerRun", "provider"] },
+                      "capability": { "type": "string" },
+                      "provider": { "type": "string" },
+                      "providerRunId": { "type": "string" },
+                      "providerReportId": { "type": "string" },
+                      "findingId": { "type": "string" },
+                      "status": { "type": "string" },
+                      "errorCode": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "annotations": {
+      "type": "array"
+    }
+  }
+}

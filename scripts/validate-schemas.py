@@ -1,26 +1,28 @@
 #!/usr/bin/env python3
-"""Validate JSON Schema 2020-12 definitions against fixtures derived from the SCINTX e2e tests."""
+"""Validate SCINTX JSON Schema 2020-12 definitions against issue #67-#75 fixtures."""
 import json
 import sys
 from pathlib import Path
-from jsonschema import Draft202012Validator, ValidationError
+from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
 SCHEMA_DIR = Path("schema")
 FAIL = 0
 PASS = 0
 
+
 def load_schema(name):
     with open(SCHEMA_DIR / name) as f:
         return json.load(f)
 
-# Build a registry of all schemas by their $id
+
 resources = []
 for p in SCHEMA_DIR.glob("*.schema.json"):
     with open(p) as f:
         doc = json.load(f)
     resources.append((doc["$id"], Resource.from_contents(doc)))
 registry = Registry().with_resources(resources)
+
 
 def validate(schema_name, instance, label, should_fail=False):
     global FAIL, PASS
@@ -44,209 +46,203 @@ def validate(schema_name, instance, label, should_fail=False):
             PASS += 1
             print(f"  PASS  {label}")
 
+
 print("== SCINTX schema validation ==\n")
 
-validate("resource-reference.schema.json", {
-    "uri": "urn:scintx:blob:abc",
-    "media_type": "application/json",
-    "digests": {"sha256": "cd1988"},
-    "format": "osv"
-}, "resource-ref basic")
-
-validate("artifact.schema.json", {"purl": "pkg:pypi/requests@2.32.3"}, "artifact purl-only")
-validate("artifact.schema.json", {"digests": {"sha256": "abc"}}, "artifact digests-only")
+validate("artifact.schema.json", {"purl": "pkg:npm/lodash@4.17.21"}, "artifact purl")
 validate("artifact.schema.json", {
-    "content_ref": {"uri": "urn:scintx:blob:x", "media_type": "application/octet-stream"},
-    "digests": {"sha256": "abc"}
-}, "artifact content+digests")
+    "digest": {
+        "algorithm": "sha256",
+        "value": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+}, "artifact digest")
 validate("artifact.schema.json", {}, "artifact empty (should fail)", should_fail=True)
 
 validate("submission-create.schema.json", {
-    "schema_version": "1.0.0",
-    "artifact": {"purl": "pkg:pypi/requests@2.32.3"},
-    "requested_capabilities": ["vulnerability"],
-    "policy_ref": "registry-default"
-}, "submission-create purl")
+    "artifact": {"purl": "pkg:npm/lodash@4.17.21"},
+    "policy": "baseline-security"
+}, "submission-create with policy")
 
 validate("submission.schema.json", {
-    "id": "sub_abc",
-    "schema_version": "1.0.0",
-    "artifact": {"purl": "pkg:pypi/requests@2.32.3"},
+    "schemaVersion": "1",
+    "id": "submission-123",
     "status": "completed",
-    "completion_reason": "decision_produced",
-    "created_at": "2026-08-17T14:12:03Z",
-    "completed_at": "2026-08-17T14:14:04Z",
-    "result_ids": ["res_1"],
-    "decision_id": "dec_1"
-}, "submission response completed")
-
-validate("submission.schema.json", {
-    "id": "sub_abc",
-    "schema_version": "1.0.0",
-    "artifact": {"purl": "pkg:npm/left-pad@1.3.0"},
-    "status": "completed",
-    "completion_reason": "findings_only",
-    "created_at": "2026-08-17T14:12:03Z",
-    "result_ids": ["res_1"],
-    "decision_id": None
-}, "submission findings-only (decision_id null)")
-
-validate("provider-capabilities.schema.json", {
-    "schema_version": "1.0.0",
-    "provider": {"id": "stub-osv", "name": "stub-osv", "version": "2026.8"},
-    "manifest_version": "1",
-    "manifest_digest": "sha256:" + "a"*64,
-    "updated_at": "2026-08-17T12:00:00Z",
-    "capabilities": [{
-        "id": "vulnerability",
-        "version": "v1",
-        "input_profiles": [{
-            "id": "purl",
-            "requires": [{"kind": "purl", "types": ["npm", "pypi"]}]
-        }],
-        "finding_types": ["vulnerability"]
-    }]
-}, "provider-capabilities basic")
+    "acceptedAt": "2026-11-20T14:00:00Z",
+    "completedAt": "2026-11-20T14:00:02Z",
+    "artifact": {"purl": "pkg:npm/lodash@4.17.21"},
+    "policy": {"id": "baseline-security", "version": "1.0.0"},
+    "providerSummary": {
+        "selected": 2,
+        "completed": 1,
+        "failed": 0,
+        "timedOut": 0,
+        "incomplete": 1
+    },
+    "evidenceStatus": "partial",
+    "policyVerdict": "violated",
+    "aggregateReportId": "aggregate-123",
+    "policyReportId": "policy-report-001"
+}, "submission completed response")
 
 validate("finding.schema.json", {
-    "id": "OSV-2026-0001",
+    "id": "finding-001",
     "type": "vulnerability",
-    "title": "SSRF via crafted redirect URL",
-    "identifiers": [
-        {"scheme": "OSV", "value": "OSV-2026-0001", "relation": "none"},
-        {"scheme": "CVE", "value": "CVE-2026-12345", "relation": "alias"}
+    "severity": "critical",
+    "title": "Example vulnerability",
+    "artifact": {"purl": "pkg:npm/example@1.2.3"},
+    "identifiers": ["CVE-2026-12345"]
+}, "finding critical")
+
+validate("aggregate-report.schema.json", {
+    "schemaVersion": "1",
+    "id": "aggregate-123",
+    "submission": {
+        "id": "submission-123",
+        "acceptedAt": "2026-11-20T14:00:00Z"
+    },
+    "artifact": {"purl": "pkg:npm/example@1.2.3"},
+    "gateway": {
+        "instanceId": "gateway-001",
+        "version": "1.0.0",
+        "configuration": {
+            "revision": "abc123",
+            "snapshotRef": "config-snapshot-001"
+        }
+    },
+    "policy": {
+        "id": "baseline-security",
+        "version": "1.0.0",
+        "capabilities": ["vulnerabilities"],
+        "evaluationDeadlineMs": 30000
+    },
+    "providers": [
+        {
+            "slug": "osv",
+            "adapterVersion": "1.0.0",
+            "available": True,
+            "eligible": True,
+            "selected": True,
+            "matched_capabilities": ["vulnerabilities"],
+            "reasons": [],
+            "providerRunId": "run-001"
+        },
+        {
+            "slug": "acme",
+            "adapterVersion": "1.0.0",
+            "available": False,
+            "eligible": False,
+            "selected": False,
+            "matched_capabilities": [],
+            "reasons": ["missing_credentials"]
+        }
     ],
-    "subjects": [{"purl": "pkg:pypi/requests@2.32.3"}],
-    "subject_origin": "submitted_artifact",
-    "severity": [{"scheme": "CVSS", "version": "4.0", "score": 8.7, "level": "high", "vector": "CVSS:4.0/...", "source": "provider"}],
-    "weaknesses": [{"scheme": "CWE", "id": "CWE-918"}],
-    "assessment": {"status": "affected"}
-}, "finding with alias relation")
+    "providerRuns": [
+        {
+            "id": "run-001",
+            "provider": "osv",
+            "status": "completed",
+            "startedAt": "2026-11-20T14:00:01Z",
+            "completedAt": "2026-11-20T14:00:02Z",
+            "durationMs": 1000,
+            "reportId": "report-001"
+        },
+        {
+            "id": "run-002",
+            "provider": "ossindex",
+            "status": "incomplete",
+            "startedAt": "2026-11-20T14:00:01Z",
+            "completedAt": None,
+            "durationMs": 29900,
+            "reportId": None
+        }
+    ],
+    "providerReports": [
+        {
+            "id": "report-001",
+            "providerRunId": "run-001",
+            "provider": "osv",
+            "capabilities": {
+                "vulnerabilities": {
+                    "status": "completed",
+                    "findings": [
+                        {
+                            "id": "finding-001",
+                            "type": "vulnerability",
+                            "severity": "critical",
+                            "title": "Example vulnerability",
+                            "artifact": {"purl": "pkg:npm/example@1.2.3"},
+                            "identifiers": ["CVE-2026-12345"]
+                        }
+                    ]
+                }
+            },
+            "providerVerdict": None,
+            "rawEvidenceRef": "evidence-001"
+        }
+    ]
+}, "aggregate-report issue #68 example")
 
-validate("finding.schema.json", {
-    "id": "f1", "type": "vulnerability",
-    "weaknesses": [{"scheme": "CWE", "id": "NOT-CWE"}]
-}, "finding bad CWE (should fail)", should_fail=True)
-
-validate("provider-result.schema.json", {
-    "id": "res_1",
-    "schema_version": "1.0.0",
-    "submission_id": "sub_1",
-    "provider": {"id": "stub-osv", "version": "2026.8"},
-    "capabilities": ["vulnerability:v1"],
-    "capability_manifest_digest": "sha256:" + "a"*64,
-    "execution": {"status": "completed", "started_at": "2026-08-17T14:12:04Z", "finished_at": "2026-08-17T14:12:05Z"},
-    "verdict": {"value": "pass", "origin": "provider"}
-}, "result completed pass")
-
-validate("provider-result.schema.json", {
-    "id": "res_2",
-    "schema_version": "1.0.0",
-    "submission_id": "sub_1",
-    "provider": {"id": "stub-osv", "version": "2026.8"},
-    "capabilities": ["vulnerability:v1"],
-    "capability_manifest_digest": "sha256:" + "a"*64,
-    "execution": {"status": "completed", "started_at": "2026-08-17T14:12:04Z", "finished_at": "2026-08-17T14:12:05Z"},
-    "verdict": {"value": "fail", "origin": "provider", "derivation": {"driven_by": [{"finding_id": "OSV-1", "weight": "primary"}], "summary": "1 finding"}},
-    "findings": [{"id": "OSV-1", "type": "vulnerability", "assessment": {"status": "affected"}}]
-}, "result completed fail with derivation")
-
-validate("provider-result.schema.json", {
-    "id": "res_3",
-    "schema_version": "1.0.0",
-    "submission_id": "sub_1",
-    "provider": {"id": "stub-osv", "version": "2026.8"},
-    "capabilities": ["vulnerability:v1"],
-    "capability_manifest_digest": "sha256:" + "a"*64,
-    "execution": {"status": "error", "started_at": "2026-08-17T14:12:04Z", "finished_at": "2026-08-17T14:12:05Z", "error": {"code": "transport_error", "message": "timeout"}},
-    "verdict": {"value": "pass", "origin": "adapter"}
-}, "result error with verdict (should fail)", should_fail=True)
-
-validate("policy-decision.schema.json", {
-    "id": "dec_1",
-    "submission_id": "sub_1",
-    "decision": "deny",
-    "policy": {"id": "registry-default", "version": "1", "digest": "sha256:" + "b"*64},
-    "evaluated_at": "2026-08-17T14:14:04Z",
-    "input_result_ids": ["res_2"],
-    "reasons": [{
-        "code": "critical_severity_vulnerability",
-        "result_id": "res_2",
-        "finding_id": "OSV-1",
-        "severity_ref": {"scheme": "CVSS", "version": "4.0", "score": 9.1},
-        "message": "CVSS 9.1 vulnerability with no fix available"
-    }]
-}, "decision deny with finding reason")
-
-validate("policy-decision.schema.json", {
-    "id": "dec_2",
-    "submission_id": "sub_1",
-    "decision": "defer",
-    "policy": {"id": "registry-default", "version": "1"},
-    "evaluated_at": "2026-08-17T14:14:04Z",
-    "input_result_ids": ["res_3"],
-    "reasons": [{"code": "required_provider_timeout", "result_id": "res_3", "message": "Provider timed out"}],
-    "resume_at": "2026-08-17T15:14:04Z",
-    "resume_on": "org.eclipse.scintx.submission.resume"
-}, "decision defer with resume_at")
-
-validate("event.schema.json", {
-    "specversion": "1.0",
-    "id": "evt_1",
-    "source": "https://scintx.example",
-    "type": "org.eclipse.scintx.policy-decision.created.v1",
-    "subject": "sub_1",
-    "time": "2026-08-17T14:14:04Z",
-    "data": {"decision": "deny", "decision_id": "dec_1"}
-}, "cloudevent policy-decision.created")
-
-validate("event.schema.json", {
-    "specversion": "1.0",
-    "id": "evt_resolved",
-    "source": "https://scintx.example",
-    "type": "org.eclipse.scintx.policy-decision.resolved.v1",
-    "subject": "sub_1",
-    "time": "2026-08-17T14:14:04Z",
-    "data": {
-        "decision": "allow",
-        "decision_id": "dec_2",
-        "prior_decision_id": "dec_1",
-        "source": "registry-ui"
-    }
-}, "cloudevent policy-decision.resolved")
-
-validate("adjudicate-request.schema.json", {
-    "decision": "allow",
-    "actor": "alice@example.com",
-    "source": "registry-ui",
-    "rationale": "Accepted risk until lodash>=4.17.21"
-}, "adjudicate allow from consumer")
-
-validate("adjudicate-request.schema.json", {
-    "decision": "review"
-}, "adjudicate review not allowed (should fail)", should_fail=True)
-
-validate("event.schema.json", {
-    "specversion": "1.0",
-    "id": "evt_2",
-    "source": "https://scintx.example",
-    "type": "org.eclipse.scintx.unknown.event.v1",
-    "time": "2026-08-17T14:14:04Z"
-}, "cloudevent bad type (should fail)", should_fail=True)
+validate("policy-report.schema.json", {
+    "id": "policy-report-001",
+    "submissionId": "submission-123",
+    "aggregateReportId": "aggregate-123",
+    "policy": {"id": "baseline-security", "version": "1.0.0"},
+    "artifact": {"purl": "pkg:npm/my-app@1.0.0"},
+    "evaluationStatus": "completed",
+    "evidenceStatus": "partial",
+    "policyVerdict": "violated",
+    "violations": [
+        {
+            "id": "critical-vulnerability",
+            "description": "Critical vulnerability detected",
+            "matches": [
+                {
+                    "artifact": {"purl": "pkg:npm/lodash@4.17.21"},
+                    "dependencyPath": [
+                        "pkg:npm/my-app@1.0.0",
+                        "pkg:npm/middleware@2.0.0",
+                        "pkg:npm/lodash@4.17.21"
+                    ],
+                    "evidence": [
+                        {
+                            "type": "finding",
+                            "capability": "vulnerabilities",
+                            "provider": "osv",
+                            "providerRunId": "run-001",
+                            "providerReportId": "report-001",
+                            "findingId": "finding-001"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "provider-run-incomplete",
+            "description": "Provider execution did not complete",
+            "matches": [
+                {
+                    "artifact": {"purl": "pkg:npm/my-app@1.0.0"},
+                    "evidence": [
+                        {
+                            "type": "providerRun",
+                            "provider": "ossindex",
+                            "providerRunId": "run-002",
+                            "status": "timed_out"
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "annotations": []
+}, "policy-report issue #68 example")
 
 validate("problem-details.schema.json", {
-    "type": "https://scintx.example/problems/not_found",
-    "title": "Not Found",
-    "status": 404,
-    "detail": "submission not found"
+    "type": "https://scintx.example/problems/validation_failed",
+    "title": "validation_failed",
+    "status": 422,
+    "detail": "invalid purl"
 }, "problem-details basic")
-
-validate("compatibility-result.schema.json", {
-    "provider_id": "stub-osv",
-    "capability": "malware:v1",
-    "eligible": False,
-    "reasons": [{"code": "missing_required_input", "input": "content"}]
-}, "compatibility-result ineligible")
 
 print(f"\n{PASS} passed, {FAIL} failed")
 if FAIL:

@@ -1,45 +1,53 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://scintx.example/schemas/2020-12/submission.schema.json",
+  "$id": "https://scintx.example/schema/submission.schema.json",
   "title": "Submission",
-  "description": "The orchestration aggregate for a security analysis. Server-generated fields (id, status, result_ids, decision_id, timestamps) are response-only.",
   "type": "object",
-  "required": ["id", "schema_version", "artifact", "status", "created_at", "result_ids", "decision_id"],
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "status", "acceptedAt", "artifact", "policy"],
   "properties": {
-    "id": {
-      "type": "string",
-      "description": "Opaque globally unique submission identifier."
-    },
-    "schema_version": {
-      "type": "string",
-      "pattern": "^\\d+\\.\\d+\\.\\d+$"
-    },
-    "artifact": {"$ref": "artifact.schema.json"},
-    "requested_capabilities": {
-      "type": "array",
-      "items": {"type": "string"}
-    },
-    "provider_selectors": {"type": "object"},
-    "policy_ref": {"type": "string"},
+    "schemaVersion": { "type": "string", "const": "1" },
+    "id": { "type": "string", "minLength": 1 },
     "status": {
       "type": "string",
-      "enum": ["accepted", "running", "completed", "failed", "deferred"]
+      "enum": ["accepted", "running", "completed", "failed"]
     },
-    "completion_reason": {
+    "acceptedAt": { "type": "string" },
+    "completedAt": { "type": "string" },
+    "artifact": {
+      "$ref": "https://scintx.example/schema/artifact.schema.json"
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    },
+    "providerSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selected", "completed", "failed", "timedOut", "incomplete"],
+      "properties": {
+        "selected": { "type": "integer", "minimum": 0 },
+        "completed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "timedOut": { "type": "integer", "minimum": 0 },
+        "incomplete": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "evidenceStatus": {
       "type": "string",
-      "enum": ["decision_produced", "findings_only", "deferred", "failed", "all_providers_ineligible"]
+      "enum": ["complete", "partial", "unavailable"]
     },
-    "created_at": {"type": "string", "format": "date-time"},
-    "completed_at": {"type": "string", "format": "date-time"},
-    "result_ids": {
-      "type": "array",
-      "items": {"type": "string"}
+    "policyVerdict": {
+      "type": "string",
+      "enum": ["satisfied", "violated", "undetermined"]
     },
-    "decision_id": {
-      "type": ["string", "null"]
-    },
-    "resume_at": {"type": "string", "format": "date-time"},
-    "extensions": {"type": "object"}
-  },
-  "additionalProperties": false
+    "aggregateReportId": { "type": "string" },
+    "policyReportId": { "type": "string" },
+    "error": { "type": "string" }
+  }
 }
