@@ -12,6 +12,7 @@ func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
 		if err := runServe(); err != nil {
+			fmt.Fprintf(os.Stderr, "serve failed: %v\n", err)
 			os.Exit(1)
 		}
 		return
@@ -19,6 +20,7 @@ func main() {
 	switch args[0] {
 	case "serve":
 		if err := runServe(); err != nil {
+			fmt.Fprintf(os.Stderr, "serve failed: %v\n", err)
 			os.Exit(1)
 		}
 	case "health":

@@ -64,12 +64,12 @@ SUB_JSON="$(curl -fsS -X POST "${DEMO_URL}/v1/submissions" \
   -d '{"artifact":{"purl":"pkg:npm/lodash@4.17.20"}}')"
 printf '%s\n' "${SUB_JSON}"
 
-SUB_ID="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["id"])' <<<"${SUB_JSON}")"
+SUB_ID="$(printf '%s' "${SUB_JSON}" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
 
 # Poll until submission reaches completed status.
 for _ in $(seq 1 30); do
   STATUS_JSON="$(curl -fsS "${DEMO_URL}/v1/submissions/${SUB_ID}")"
-  STATUS="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["status"])' <<<"${STATUS_JSON}")"
+  STATUS="$(printf '%s' "${STATUS_JSON}" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"
   if [[ "${STATUS}" == "completed" ]]; then
     break
   fi
