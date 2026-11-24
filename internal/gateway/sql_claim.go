@@ -17,7 +17,7 @@ import (
 
 // The two queries below find the next claimable row. They are named constants
 // so the tests can check their query plans. The status filter is written
-// exactly like the WHERE clause of idx_submissions_queue (see sql_store.go).
+// exactly like the WHERE clause of idx_submissions_queue (see sql_schema.go).
 // That match is what lets the database use the index.
 //
 // Each query takes two arguments: the new lease, then "now" (see leaseArg in

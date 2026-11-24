@@ -85,7 +85,7 @@ type Store interface {
 	// ReleaseLease clears the active lease_until timestamp for an in-flight
 	// "running" submission when a worker is interrupted by shutdown. The row
 	// can then be claimed again at once. (Retryable failures no longer use
-	// this. They wait out a backoff through RenewLease instead.)
+	// this. They wait out a backoff through DelayRetry instead.)
 	ReleaseLease(ctx context.Context, id string, attempt int) error
 	// GetSubmission retrieves a submission by ID.
 	GetSubmission(ctx context.Context, id string) (api.Submission, bool, error)

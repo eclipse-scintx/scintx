@@ -61,10 +61,14 @@ type Digest struct {
 
 // ParseDigest splits a "<algorithm>:<hex>" string from a multipart form field
 // into a Digest struct. ValidateDigest checks the returned struct afterward.
+//
+// It always returns a non-nil Digest so that an empty "digest" form field is
+// still counted as a provided field and rejected by validation (instead of
+// being silently ignored when sent alongside a purl).
 func ParseDigest(s string) *Digest {
 	trimmed := strings.TrimSpace(s)
 	if trimmed == "" {
-		return nil
+		return &Digest{}
 	}
 	parts := strings.SplitN(trimmed, ":", 2)
 	if len(parts) != 2 {

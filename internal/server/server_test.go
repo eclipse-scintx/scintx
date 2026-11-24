@@ -178,5 +178,14 @@ func TestMultipartSubmission(t *testing.T) {
 		t.Fatalf("expected 400 for unknown multipart field, got %d: %s", rec3.Code, rec3.Body.String())
 	}
 
+	// 4. Empty digest field paired with purl still counts as two fields and fails closed (422).
+	rec4 := postMultipart(t, handler, "/v1/submissions", func(mw *multipart.Writer) {
+		_ = mw.WriteField("purl", "pkg:npm/express@4.19.2")
+		_ = mw.WriteField("digest", "")
+	})
+	if rec4.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 when purl and empty digest are both supplied, got %d: %s", rec4.Code, rec4.Body.String())
+	}
+
 	orch.Wait()
 }
