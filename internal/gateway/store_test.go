@@ -11,90 +11,111 @@ import (
 	"time"
 
 	"github.com/yeeth-security/scintx/api"
+	"github.com/yeeth-security/scintx/internal/config"
 )
 
-func TestSQLStorePersistenceAndStateMachine(t *testing.T) {
+func TestSQLStoreLeaseRecoveryAndAttemptCap(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "nested", "scintx.db")
 	dsn := "file:" + filepath.ToSlash(dbPath)
 	ctx := context.Background()
 
-	// 1. Open store and write a submission through valid state transitions.
+	// 1. Open store and insert an "accepted" submission and an in-flight
+	// "running" submission whose lease expires across a gateway restart.
 	store1, err := OpenStore(dsn)
 	if err != nil {
 		t.Fatalf("OpenStore(1) failed: %v", err)
 	}
-	if err := store1.Ping(ctx); err != nil {
-		t.Fatalf("Ping(1) failed: %v", err)
-	}
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	sub := api.Submission{
+	inFlight := api.Submission{
 		SchemaVersion: api.SchemaVersionV1,
-		ID:            "submission-persist-001",
+		ID:            "submission-aa00bb11cc22",
 		Status:        api.SubmissionAccepted,
 		AcceptedAt:    now,
 		Artifact:      api.ArtifactInput{PURL: "pkg:npm/lodash@4.17.20"},
 	}
-	if err := store1.PutSubmission(ctx, sub); err != nil {
-		t.Fatalf("PutSubmission(accepted) failed: %v", err)
+	if err := store1.PutSubmission(ctx, inFlight); err != nil {
+		t.Fatalf("PutSubmission(inFlight) failed: %v", err)
 	}
 
-	// Skipping "running" (accepted -> completed directly) must fail closed.
-	invalidJump := sub
-	invalidJump.Status = api.SubmissionCompleted
-	if err := store1.PutSubmission(ctx, invalidJump); err == nil {
-		t.Fatal("expected PutSubmission to reject accepted -> completed transition")
+	// Simulate worker claiming the submission with a short 10ms lease, then crashing before completion.
+	claimed, ok, err := store1.ClaimNextSubmission(ctx, now, 10*time.Millisecond, 3)
+	if err != nil || !ok {
+		t.Fatalf("ClaimNextSubmission(1) failed: err=%v ok=%v", err, ok)
+	}
+	if claimed.Status != api.SubmissionRunning || claimed.Attempts != 1 {
+		t.Fatalf("expected running with attempts=1, got %+v", claimed)
 	}
 
-	// Transition accepted -> running -> completed.
-	if err := sub.TransitionTo(api.SubmissionRunning, "", now.Add(10*time.Millisecond)); err != nil {
-		t.Fatal(err)
-	}
-	if err := store1.PutSubmission(ctx, sub); err != nil {
-		t.Fatalf("PutSubmission(running) failed: %v", err)
-	}
-	if err := sub.TransitionTo(api.SubmissionCompleted, "", now.Add(25*time.Millisecond)); err != nil {
-		t.Fatal(err)
-	}
-	if err := store1.PutSubmission(ctx, sub); err != nil {
-		t.Fatalf("PutSubmission(completed) failed: %v", err)
+	// While lease is still active (now + 2ms), another claim must NOT steal it.
+	if _, ok, err := store1.ClaimNextSubmission(ctx, now.Add(2*time.Millisecond), 10*time.Millisecond, 3); err != nil || ok {
+		t.Fatalf("expected active lease to prevent premature claim, got ok=%v err=%v", ok, err)
 	}
 
-	// Also insert an interrupted submission left in "running" state before restart.
-	stranded := api.Submission{
-		SchemaVersion: api.SchemaVersionV1,
-		ID:            "submission-stranded-002",
-		Status:        api.SubmissionAccepted,
-		AcceptedAt:    now,
-		Artifact:      api.ArtifactInput{PURL: "pkg:npm/express@4.19.2"},
-	}
-	if err := store1.PutSubmission(ctx, stranded); err != nil {
-		t.Fatal(err)
-	}
+	// Close store1 while submission is still "running" (simulating gateway crash/restart).
 	if err := store1.Close(); err != nil {
 		t.Fatalf("Close(1) failed: %v", err)
 	}
 
-	// 2. Reopen store: completed submission stays completed, stranded submission fails closed.
+	// 2. Wait for the 10ms lease to expire, start a new gateway Orchestrator on store2,
+	// and verify it automatically picks the in-flight submission back up and completes it!
+	time.Sleep(20 * time.Millisecond)
+
 	store2, err := OpenStore(dsn)
 	if err != nil {
 		t.Fatalf("OpenStore(2) failed: %v", err)
 	}
 	defer store2.Close()
 
-	loaded, ok, err := store2.GetSubmission(ctx, sub.ID)
+	orch := NewOrchestrator(config.Default(), store2)
+	defer orch.Shutdown()
+	orch.Wait()
+
+	recovered, ok, err := store2.GetSubmission(ctx, inFlight.ID)
 	if err != nil || !ok {
-		t.Fatalf("GetSubmission(completed) failed: %v, ok=%v", err, ok)
+		t.Fatalf("GetSubmission(recovered) failed: %v, ok=%v", err, ok)
 	}
-	if loaded.Status != api.SubmissionCompleted {
-		t.Fatalf("expected completed, got %q", loaded.Status)
+	if recovered.Status != api.SubmissionCompleted {
+		t.Fatalf("expected restarted gateway to pick up and complete in-flight submission, got %+v", recovered)
+	}
+	if recovered.Attempts != 2 {
+		t.Fatalf("expected attempts=2 after restart pickup, got %d", recovered.Attempts)
 	}
 
-	recovered, ok, err := store2.GetSubmission(ctx, stranded.ID)
-	if err != nil || !ok {
-		t.Fatalf("GetSubmission(stranded) failed: %v, ok=%v", err, ok)
+	// 3. Verify that a submission that repeatedly fails/expires across MaxAttempts
+	// never gets stuck and transitions to terminal "failed" state.
+	crashLoop := api.Submission{
+		SchemaVersion: api.SchemaVersionV1,
+		ID:            "submission-dd33ee44ff55",
+		Status:        api.SubmissionAccepted,
+		AcceptedAt:    now,
+		Artifact:      api.ArtifactInput{PURL: "pkg:npm/express@4.19.2"},
 	}
-	if recovered.Status != api.SubmissionFailed || recovered.Error == "" {
-		t.Fatalf("expected stranded submission to fail closed on reopen, got %+v", recovered)
+	if err := store2.PutSubmission(ctx, crashLoop); err != nil {
+		t.Fatal(err)
+	}
+
+	t0 := time.Now().UTC()
+	for attempt := 1; attempt <= 2; attempt++ {
+		c, ok, err := store2.ClaimNextSubmission(ctx, t0, 5*time.Millisecond, 2)
+		if err != nil || !ok {
+			t.Fatalf("attempt %d claim failed: ok=%v err=%v", attempt, ok, err)
+		}
+		if c.Attempts != attempt {
+			t.Fatalf("got attempts=%d, want %d", c.Attempts, attempt)
+		}
+		t0 = t0.Add(10 * time.Millisecond) // advance past lease expiry
+	}
+
+	// Next claim after reaching maxAttempts=2 must fail closed and mark it "failed".
+	if _, ok, err := store2.ClaimNextSubmission(ctx, t0, 5*time.Millisecond, 2); err != nil || ok {
+		t.Fatalf("expected no runnable claim after exhausting maxAttempts, got ok=%v err=%v", ok, err)
+	}
+	failedSub, ok, err := store2.GetSubmission(ctx, crashLoop.ID)
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	if failedSub.Status != api.SubmissionFailed || failedSub.Error == "" {
+		t.Fatalf("expected exhausted submission to transition to failed, got %+v", failedSub)
 	}
 }

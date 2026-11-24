@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: EPL-2.0
 
-// Package gateway manages artifact submissions, persistent storage, and status
-// tracking.
+// Package gateway manages artifact submissions, lease-based persistent storage,
+// and self-healing status tracking.
 package gateway
 
 import (
@@ -16,18 +16,28 @@ import (
 	"github.com/yeeth-security/scintx/api"
 )
 
-// Store abstracts submission persistence across SQLite, PostgreSQL, and
-// in-memory test backends. Implementations enforce valid submission state
-// transitions and fail closed on invalid transitions.
+// DefaultLeaseDuration is the time window a worker holds a claim on a
+// running submission before another worker (or a restarted gateway) can
+// automatically re-claim it.
+const DefaultLeaseDuration = 30 * time.Second
+
+// DefaultMaxAttempts is the maximum number of execution claims allowed for a
+// submission before it transitions to terminal "failed" state (preventing
+// infinite crash loops).
+const DefaultMaxAttempts = 3
+
+// Store abstracts submission persistence and lease-based work claiming across
+// SQLite, PostgreSQL, and in-memory backends.
 type Store interface {
 	// PutSubmission inserts a new submission or transitions an existing one.
 	PutSubmission(ctx context.Context, sub api.Submission) error
+	// ClaimNextSubmission atomically claims the next eligible submission whose
+	// status is "accepted" or "running" with an expired (or unset) lease.
+	// If the submission has already reached maxAttempts, it transitions the
+	// submission to terminal "failed" state and continues looking for work.
+	ClaimNextSubmission(ctx context.Context, now time.Time, leaseDuration time.Duration, maxAttempts int) (api.Submission, bool, error)
 	// GetSubmission retrieves a submission by ID.
 	GetSubmission(ctx context.Context, id string) (api.Submission, bool, error)
-	// FailIncompleteSubmissions marks any non-terminal ("accepted" or "running")
-	// submissions as "failed" during startup recovery so interrupted runs never
-	// remain stranded in an indeterminate state.
-	FailIncompleteSubmissions(ctx context.Context, reason string) error
 	// Ping verifies that the underlying storage backend is reachable.
 	Ping(ctx context.Context) error
 	// Close releases any underlying database connections.
@@ -47,16 +57,21 @@ func OpenStore(dsn string) (Store, error) {
 	return OpenSQLStore(trimmed)
 }
 
-// MemoryStore provides thread-safe in-memory storage for unit tests.
+type memoryEntry struct {
+	sub        api.Submission
+	leaseUntil time.Time
+}
+
+// MemoryStore provides thread-safe in-memory storage with lease-based claiming.
 type MemoryStore struct {
 	mu          sync.RWMutex
-	submissions map[string]api.Submission
+	submissions map[string]memoryEntry
 }
 
 // NewMemoryStore creates a new in-memory gateway store.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		submissions: make(map[string]api.Submission),
+		submissions: make(map[string]memoryEntry),
 	}
 }
 
@@ -71,37 +86,67 @@ func (s *MemoryStore) PutSubmission(_ context.Context, sub api.Submission) error
 	prev, exists := s.submissions[sub.ID]
 	var from api.SubmissionStatus
 	if exists {
-		from = prev.Status
+		from = prev.sub.Status
 	}
 	if !api.CanTransition(from, sub.Status) {
 		return fmt.Errorf("invalid submission state transition for %s: %q -> %q", sub.ID, from, sub.Status)
 	}
-	s.submissions[sub.ID] = sub
+	var lease time.Time
+	if exists && !sub.Status.IsTerminal() {
+		lease = prev.leaseUntil
+	}
+	s.submissions[sub.ID] = memoryEntry{sub: sub, leaseUntil: lease}
 	return nil
+}
+
+// ClaimNextSubmission atomically claims an eligible "accepted" or lease-expired
+// "running" submission in memory.
+func (s *MemoryStore) ClaimNextSubmission(_ context.Context, now time.Time, leaseDuration time.Duration, maxAttempts int) (api.Submission, bool, error) {
+	if maxAttempts <= 0 {
+		maxAttempts = DefaultMaxAttempts
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	nowUTC := now.UTC()
+	for id, entry := range s.submissions {
+		sub := entry.sub
+		if sub.Status.IsTerminal() {
+			continue
+		}
+		if !entry.leaseUntil.IsZero() && entry.leaseUntil.After(nowUTC) {
+			continue
+		}
+
+		// If maxAttempts is exhausted, fail closed instead of getting stuck.
+		if sub.Attempts >= maxAttempts {
+			reason := fmt.Sprintf("submission exceeded maximum execution attempts (%d)", maxAttempts)
+			if err := sub.TransitionTo(api.SubmissionFailed, reason, nowUTC); err != nil {
+				return api.Submission{}, false, err
+			}
+			s.submissions[id] = memoryEntry{sub: sub}
+			continue
+		}
+
+		if err := sub.TransitionTo(api.SubmissionRunning, "", nowUTC); err != nil {
+			return api.Submission{}, false, err
+		}
+		sub.Attempts++
+		s.submissions[id] = memoryEntry{
+			sub:        sub,
+			leaseUntil: nowUTC.Add(leaseDuration),
+		}
+		return sub, true, nil
+	}
+	return api.Submission{}, false, nil
 }
 
 // GetSubmission retrieves a submission by ID from memory.
 func (s *MemoryStore) GetSubmission(_ context.Context, id string) (api.Submission, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	sub, ok := s.submissions[id]
-	return sub, ok, nil
-}
-
-// FailIncompleteSubmissions transitions any non-terminal submissions to failed.
-func (s *MemoryStore) FailIncompleteSubmissions(_ context.Context, reason string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := time.Now().UTC()
-	for id, sub := range s.submissions {
-		if !sub.Status.IsTerminal() {
-			if err := sub.TransitionTo(api.SubmissionFailed, reason, now); err != nil {
-				return err
-			}
-			s.submissions[id] = sub
-		}
-	}
-	return nil
+	entry, ok := s.submissions[id]
+	return entry.sub, ok, nil
 }
 
 // Ping always succeeds for an in-memory store.

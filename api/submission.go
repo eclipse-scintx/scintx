@@ -15,7 +15,7 @@ import (
 //
 //	(new)     -> accepted
 //	accepted  -> running | failed
-//	running   -> completed | failed
+//	running   -> running (re-claimed after lease expiry/restart) | completed | failed
 //	completed -> (terminal)
 //	failed    -> (terminal)
 type SubmissionStatus string
@@ -45,6 +45,9 @@ func (s SubmissionStatus) IsTerminal() bool {
 // CanTransition reports whether a transition from current to next is permitted
 // by the submission state machine. Unknown states or transitions out of
 // terminal states are rejected (fail-closed).
+//
+// Note that running -> running is permitted so an in-flight submission whose
+// lease expired across a gateway restart can be re-claimed and completed.
 func CanTransition(current, next SubmissionStatus) bool {
 	if !next.IsValid() {
 		return false
@@ -55,7 +58,7 @@ func CanTransition(current, next SubmissionStatus) bool {
 	case SubmissionAccepted:
 		return next == SubmissionRunning || next == SubmissionFailed
 	case SubmissionRunning:
-		return next == SubmissionCompleted || next == SubmissionFailed
+		return next == SubmissionRunning || next == SubmissionCompleted || next == SubmissionFailed
 	case SubmissionCompleted, SubmissionFailed:
 		return false
 	default:
@@ -69,6 +72,7 @@ type Submission struct {
 	SchemaVersion string           `json:"schemaVersion"`
 	ID            string           `json:"id"`
 	Status        SubmissionStatus `json:"status"`
+	Attempts      int              `json:"attempts,omitempty"`
 	AcceptedAt    time.Time        `json:"acceptedAt"`
 	CompletedAt   *time.Time       `json:"completedAt,omitempty"`
 	Artifact      ArtifactInput    `json:"artifact"`

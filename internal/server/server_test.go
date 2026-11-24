@@ -26,8 +26,11 @@ func newTestServer(t *testing.T) (*Server, *gateway.Orchestrator) {
 	if err != nil {
 		t.Fatalf("OpenStore failed: %v", err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
 	orch := gateway.NewOrchestrator(cfg, store)
+	t.Cleanup(func() {
+		orch.Shutdown()
+		_ = store.Close()
+	})
 	return New(cfg, store, orch), orch
 }
 

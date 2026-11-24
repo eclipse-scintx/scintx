@@ -86,7 +86,7 @@ func (s *Server) Start() error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.state.Store(int32(StateDraining))
 	err := s.httpServer.Shutdown(ctx)
-	s.orchestrator.Wait()
+	s.orchestrator.Shutdown()
 	_ = s.store.Close()
 	s.state.Store(int32(StateStopped))
 	return err

@@ -103,10 +103,10 @@ curl -i -X POST http://127.0.0.1:8080/v1/submissions \
 
 ---
 
-## Persistent Storage, Restart Behavior, and Limitations
+## Persistent Storage, Self-Healing Restart Behavior, and Limitations
 
 - **Persistent state retention (`SQLite` & `PostgreSQL`):** Submissions are persisted via `database/sql` (`internal/gateway/sql_store.go`). By default, the gateway uses a pure-Go embedded SQLite database (`file:data/scintx.db` locally, `file:/data/scintx.db` in containers) with Write-Ahead Logging (`WAL`). For multi-instance deployments, set `SCINTX_DATABASE_URL` (or `SCINTX_DATABASE_URL_FILE`) to a `postgres://...` connection URI.
-- **Restart behavior:** Graceful shutdown (`SIGTERM` / `SIGINT`) marks `/readyz` as `503 Service Unavailable`, drains active HTTP connections, waits for in-flight submissions to finish, and cleanly closes the database connection. Submissions stored in SQLite (with a mounted `/data` volume) or PostgreSQL survive process and container restarts.
+- **Self-healing restart behavior (no stuck scans):** Work is claimed from the persistent store using time-bounded leases (`lease_until`) and an execution attempt counter (`attempts`). If the gateway restarts or crashes while a submission is in `accepted` or `running` state, the submission is not killed: once its lease expires, the gateway's normal worker loop automatically re-claims and completes it. If a submission repeatedly fails or crashes across `DefaultMaxAttempts` (3 attempts), it automatically transitions to terminal `failed` state (fail-closed) so scans never get stuck and no separate recovery service is required.
 - **Deployment limitations:**
   - Embedded SQLite supports a single gateway container instance; multi-replica deployments require PostgreSQL (`SCINTX_DATABASE_URL=postgres://...`).
   - Provider adapter execution, aggregation, and policy evaluation are staged in subsequent releases.

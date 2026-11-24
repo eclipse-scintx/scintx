@@ -22,8 +22,8 @@ The initial gateway establishes the core HTTP entrypoint, artifact validation, p
 
 ---
 
-## 2. State Retention, Restart Behavior, and Limitations
+## 2. State Retention, Self-Healing Restart Behavior, and Limitations
 
 - **State retention:** Submissions are stored in SQLite (`file:data/scintx.db` or `/data/scintx.db` in containers) or PostgreSQL (`SCINTX_DATABASE_URL=postgres://...`) and survive process and container restarts.
-- **Restart behavior:** On `SIGINT`/`SIGTERM`, `/readyz` transitions to `503 Service Unavailable`, the HTTP listener drains, the orchestrator waits for in-flight submissions, and the database connection closes cleanly.
+- **Self-healing restart behavior (recovery by design):** Instead of fire-and-forget goroutines or a separate startup recovery service, the `Orchestrator` claims work from the `submissions` table using a lease timestamp (`lease_until`) and an `attempts` counter (`ClaimNextSubmission`). Any `accepted` or `running` submission whose lease has expired is automatically picked back up and completed by the normal worker loop after a gateway restart. Submissions that exhaust `DefaultMaxAttempts` (3) transition to terminal `failed` state so scans can never get stuck.
 - **Subsequent stages:** Provider adapter contracts, initial OSV and OSS Index adapters, and end-to-end provider dispatch and policy evaluation build on this foundation in subsequent stages.

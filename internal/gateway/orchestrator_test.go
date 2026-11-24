@@ -23,6 +23,7 @@ func TestOrchestratorSubmitAndStatus(t *testing.T) {
 	defer store.Close()
 
 	orch := NewOrchestrator(cfg, store)
+	defer orch.Shutdown()
 
 	sub, err := orch.Submit(context.Background(), api.ArtifactInput{
 		PURL: "pkg:npm/lodash@4.17.20",
@@ -44,5 +45,8 @@ func TestOrchestratorSubmitAndStatus(t *testing.T) {
 	}
 	if finalSub.CompletedAt == nil {
 		t.Fatal("expected completedAt timestamp")
+	}
+	if finalSub.Attempts != 1 {
+		t.Fatalf("expected attempts=1, got %d", finalSub.Attempts)
 	}
 }

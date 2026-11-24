@@ -62,6 +62,7 @@ func TestGatewayE2E(t *testing.T) {
 	}
 	orch1.Wait()
 	ts1.Close()
+	orch1.Shutdown()
 	_ = store1.Close()
 
 	// 3. Simulate gateway restart against the same persistent SQLite database.
@@ -71,6 +72,7 @@ func TestGatewayE2E(t *testing.T) {
 	}
 	defer store2.Close()
 	orch2 := gateway.NewOrchestrator(cfg, store2)
+	defer orch2.Shutdown()
 	srv2 := server.New(cfg, store2, orch2)
 	ts2 := httptest.NewServer(srv2.Routes())
 	defer ts2.Close()
