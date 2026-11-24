@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yeeth-security/scintx/api"
+	"github.com/eclipse-scintx/scintx/api"
 )
 
 type memoryEntry struct {
@@ -106,7 +106,9 @@ func (s *MemoryStore) ClaimNextSubmission(_ context.Context, now time.Time, leas
 		}
 
 		sub := bestEntry.sub
-		if sub.Attempts >= maxAttempts {
+		// AttemptsExhausted leaves out attempts that a graceful shutdown cut
+		// short, so deploys cannot use up a submission's attempt budget.
+		if sub.AttemptsExhausted(maxAttempts) {
 			reason := fmt.Sprintf("submission exceeded maximum execution attempts (%d)", maxAttempts)
 			if err := sub.TransitionTo(api.SubmissionFailed, reason, nowUTC); err != nil {
 				return api.Submission{}, false, err
@@ -151,7 +153,8 @@ func (s *MemoryStore) RenewLease(_ context.Context, id string, attempt int, now 
 	return nil
 }
 
-// ReleaseLease clears the active lease for an interrupted or retryable attempt.
+// ReleaseLease clears the active lease for an attempt that a graceful
+// shutdown interrupted, so it can be claimed again at once.
 func (s *MemoryStore) ReleaseLease(_ context.Context, id string, attempt int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

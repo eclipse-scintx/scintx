@@ -13,9 +13,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/yeeth-security/scintx/api"
-	"github.com/yeeth-security/scintx/internal/config"
-	"github.com/yeeth-security/scintx/internal/gateway"
+	"github.com/eclipse-scintx/scintx/api"
+	"github.com/eclipse-scintx/scintx/internal/config"
+	"github.com/eclipse-scintx/scintx/internal/gateway"
 )
 
 func newTestServer(t *testing.T) (*Server, *gateway.Orchestrator) {
@@ -26,7 +26,8 @@ func newTestServer(t *testing.T) (*Server, *gateway.Orchestrator) {
 	if err != nil {
 		t.Fatalf("OpenStore failed: %v", err)
 	}
-	orch := gateway.NewOrchestrator(cfg, store)
+	// A blob store is needed since uploads are stored (see upload_test.go).
+	orch := gateway.NewOrchestratorWithBlobs(cfg, store, newTestBlobs(t))
 	t.Cleanup(func() {
 		orch.Shutdown()
 		_ = store.Close()

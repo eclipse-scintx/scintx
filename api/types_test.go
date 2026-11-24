@@ -5,8 +5,10 @@
 package api
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -42,15 +44,27 @@ func TestValidateAndNormalizeArtifact(t *testing.T) {
 		t.Fatal("expected error for short sha256 digest")
 	}
 
-	// Raw content populates ContentMeta, strips MediaType parameters, and releases Content slice.
+	// Multiple artifact types must fail closed (exclusive artifact types only).
+	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{
+		PURL:   "pkg:npm/lodash@4.17.20",
+		Digest: validDigest,
+	}, 1024); err == nil {
+		t.Fatal("expected error when both purl and digest are supplied")
+	}
+}
+
+// TestValidateUploadedContent covers the streamed upload path. It was split
+// from the test above when uploads stopped being buffered in memory.
+func TestValidateUploadedContent(t *testing.T) {
+	validDigest := "sha256:" + strings.Repeat("a", 64)
 	contentBytes := []byte("hello world")
 	sum := sha256.Sum256(contentBytes)
 	expectedHex := hex.EncodeToString(sum[:])
 
-	a, err = ValidateAndNormalizeArtifact(ArtifactInput{
-		Content:   contentBytes,
-		Filename:  "hello.txt",
-		MediaType: "Text/Plain; charset=utf-8",
+	// An uploaded file is hashed as a stream. Validation then fills in
+	// ContentMeta, strips MediaType parameters, and clears Upload.
+	a, err := ValidateAndNormalizeArtifact(ArtifactInput{
+		Upload: uploadOf(t, contentBytes, "hello.txt", "Text/Plain; charset=utf-8"),
 	}, 1024)
 	if err != nil {
 		t.Fatalf("unexpected error for content: %v", err)
@@ -61,8 +75,8 @@ func TestValidateAndNormalizeArtifact(t *testing.T) {
 	if a.ContentMeta.MediaType != "text/plain" {
 		t.Fatalf("expected canonical mediaType text/plain, got %q", a.ContentMeta.MediaType)
 	}
-	if a.Content != nil {
-		t.Fatal("expected raw Content byte slice to be cleared after hashing")
+	if a.Upload != nil {
+		t.Fatal("expected raw Upload facts to be cleared after validation")
 	}
 	if a.PURL != "" || a.Digest != "" {
 		t.Fatalf("expected exclusive content artifact without purl/digest, got %+v", a)
@@ -71,45 +85,65 @@ func TestValidateAndNormalizeArtifact(t *testing.T) {
 	// Malicious filename or mediaType must fail closed.
 	for _, badName := range []string{"../evil.tgz", "dir/evil.tgz", `dir\evil.tgz`, "evil\x00.tgz", "evil\r\n.tgz", "..", strings.Repeat("a", 256)} {
 		if _, err := ValidateAndNormalizeArtifact(ArtifactInput{
-			Content:  contentBytes,
-			Filename: badName,
+			Upload: uploadOf(t, contentBytes, badName, ""),
 		}, 1024); err == nil {
 			t.Fatalf("expected filename %q to fail closed", badName)
 		}
 	}
 	for _, badMT := range []string{"not a mime type", "application/json\r\nX-Evil: 1", strings.Repeat("a", 130)} {
 		if _, err := ValidateAndNormalizeArtifact(ArtifactInput{
-			Content:   contentBytes,
-			MediaType: badMT,
+			Upload: uploadOf(t, contentBytes, "", badMT),
 		}, 1024); err == nil {
 			t.Fatalf("expected mediaType %q to fail closed", badMT)
 		}
 	}
 
-	// Multiple artifact types must fail closed (exclusive artifact types only).
+	// Content together with a purl or a digest must fail closed.
 	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{
 		PURL:   "pkg:npm/lodash@4.17.20",
-		Digest: validDigest,
-	}, 1024); err == nil {
-		t.Fatal("expected error when both purl and digest are supplied")
-	}
-	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{
-		PURL:    "pkg:npm/lodash@4.17.20",
-		Content: contentBytes,
+		Upload: uploadOf(t, contentBytes, "", ""),
 	}, 1024); err == nil {
 		t.Fatal("expected error when both purl and content are supplied")
 	}
 	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{
-		Digest:  validDigest,
-		Content: contentBytes,
+		Digest: validDigest,
+		Upload: uploadOf(t, contentBytes, "", ""),
 	}, 1024); err == nil {
 		t.Fatal("expected error when both digest and content are supplied")
 	}
 
-	// Oversized content must fail.
-	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{Content: []byte("too-long")}, 4); err == nil {
+	// Oversized content must fail, both while streaming and in validation.
+	if _, _, err := HashContent(bytes.NewReader([]byte("too-long")), 4); !errors.Is(err, ErrValidation) {
+		t.Fatalf("expected ErrValidation when the stream exceeds maxBytes, got %v", err)
+	}
+	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{Upload: uploadOf(t, []byte("too-long"), "", "")}, 4); err == nil {
 		t.Fatal("expected error when content exceeds maxBytes")
 	}
+
+	// An empty upload must fail closed.
+	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{Upload: uploadOf(t, nil, "empty.bin", "")}, 1024); err == nil {
+		t.Fatal("expected error for an empty upload")
+	}
+
+	// A client must not supply server-computed content metadata. Before the
+	// fix this object was silently dropped and the request was accepted.
+	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{
+		PURL:        "pkg:npm/lodash@4.17.20",
+		ContentMeta: &ContentMetadata{SHA256: expectedHex, SizeBytes: 11},
+	}, 1024); !errors.Is(err, ErrValidation) {
+		t.Fatalf("expected ErrValidation for client-supplied content metadata, got %v", err)
+	}
+}
+
+// uploadOf hashes data the same way the HTTP handler does and returns the
+// measured upload facts. The limit is large so the helper itself never fails.
+func uploadOf(t *testing.T, data []byte, filename, mediaType string) *ContentMetadata {
+	t.Helper()
+	sum, size, err := HashContent(bytes.NewReader(data), 1<<20)
+	if err != nil {
+		t.Fatalf("HashContent failed: %v", err)
+	}
+	return &ContentMetadata{SHA256: sum, SizeBytes: size, Filename: filename, MediaType: mediaType}
 }
 
 func TestSubmissionStateMachineFailClosed(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yeeth-security/scintx/api"
+	"github.com/eclipse-scintx/scintx/api"
 )
 
 func TestCanonicalPurl_LowercasesPyPI(t *testing.T) {

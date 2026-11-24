@@ -1,6 +1,6 @@
 # Eclipse SCINTX
 
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/yeeth-security/scintx/badge)](https://scorecard.dev/viewer/?uri=github.com/yeeth-security/scintx)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/eclipse-scintx/scintx/badge)](https://scorecard.dev/viewer/?uri=github.com/eclipse-scintx/scintx)
 
 > **S**upply **C**hain **INT**elligence E**X**change — a reusable gateway connecting software registries and consumers with supply-chain security providers.
 
@@ -50,8 +50,8 @@ docker run --rm -p 8080:8080 -v scintx-data:/data scintx-gateway:latest
 - **Filesystem requirements:**
   - `/scintx`: Read-only gateway executable.
   - `/app/gateway.yaml`: Read-only default gateway configuration.
-  - `/data`: Writable directory (owned by `65532:65532`) for the default SQLite database (`file:/data/scintx.db`) and WAL files when using embedded SQLite storage.
-  - `/tmp`: Only used if a `multipart/form-data` upload exceeds the 32 MiB in-memory multipart buffer. The container supports `--read-only` root filesystems when `/data` is mounted (or PostgreSQL is configured) and `--tmpfs /tmp:rw,noexec,nosuid,size=128m` is provided.
+  - `/data`: Writable directory (owned by `65532:65532`) for the default SQLite database (`file:/data/scintx.db`) and WAL files when using embedded SQLite storage. It also holds uploaded content under `/data/blobs` (`SCINTX_BLOB_DIR`), so it must be writable even when PostgreSQL is configured. The gateway checks this at startup and stops with a clear error if it cannot write there.
+  - `/tmp`: Not used. A `multipart/form-data` upload is hashed and written to `/data/blobs` as it streams in. It is never buffered in memory. The container supports `--read-only` root filesystems when `/data` is mounted.
 
 ---
 
@@ -69,7 +69,7 @@ The gateway exposes HTTP health endpoints and a built-in CLI probe subcommand (`
 
 Configuration values resolve in precedence order (highest to lowest):
 
-1. **Environment variables and mounted `*_FILE` secret files** (e.g., `SCINTX_ADDR`, `SCINTX_INSTANCE_ID`, `SCINTX_DATABASE_URL`, `SCINTX_DATABASE_URL_FILE`, `SCINTX_AUTH_BEARER_TOKEN`, `SCINTX_AUTH_BEARER_TOKEN_FILE`)
+1. **Environment variables and mounted `*_FILE` secret files** (e.g., `SCINTX_ADDR`, `SCINTX_INSTANCE_ID`, `SCINTX_DATABASE_URL`, `SCINTX_DATABASE_URL_FILE`, `SCINTX_BLOB_DIR`, `SCINTX_AUTH_BEARER_TOKEN`, `SCINTX_AUTH_BEARER_TOKEN_FILE`)
 2. **Gateway configuration file** (`gateway.yaml` or `SCINTX_CONFIG`)
 3. **Built-in defaults**
 
@@ -107,9 +107,16 @@ curl -i -X POST http://127.0.0.1:8080/v1/submissions \
 
 - **Persistent state retention (`SQLite` & `PostgreSQL`):** Submissions are persisted via `database/sql` (`internal/gateway/sql_store.go`). By default, the gateway uses a pure-Go embedded SQLite database (`file:data/scintx.db` locally, `file:/data/scintx.db` in containers) with Write-Ahead Logging (`WAL`). For multi-instance deployments, set `SCINTX_DATABASE_URL` (or `SCINTX_DATABASE_URL_FILE`) to a `postgres://...` connection URI.
 - **Self-healing restart behavior (no stuck scans):** Work is claimed from the persistent store using time-bounded leases (`lease_until`) and an execution attempt counter (`attempts`). If the gateway restarts or crashes while a submission is in `accepted` or `running` state, the submission is not killed: once its lease expires, the gateway's normal worker loop automatically re-claims and completes it. If a submission repeatedly fails or crashes across `DefaultMaxAttempts` (3 attempts), it automatically transitions to terminal `failed` state (fail-closed) so scans never get stuck and no separate recovery service is required.
+- **Retries and deploys:** An attempt that fails with a retryable error is retried after a backoff (5s, then 10s). An attempt that a graceful shutdown cuts short is released at once and does not count toward the 3-attempt limit. The `attempts` field counts every claim; the `interruptions` field counts the ones a shutdown cut short.
+- **Uploaded content (`SCINTX_BLOB_DIR`):** The bytes of a `content` upload are streamed to a file in the blob directory (`data/blobs` locally, `/data/blobs` in containers) so provider adapters can read them. An upload uses a small fixed amount of memory, whatever the file size, so many uploads at once do not grow memory. The file is deleted as soon as its submission reaches `completed` or `failed`. It is kept across retries and graceful shutdowns, because the next attempt still needs it. A background sweep (once per minute, and at startup) removes anything a crash left behind.
 - **Deployment limitations:**
   - Embedded SQLite supports a single gateway container instance; multi-replica deployments require PostgreSQL (`SCINTX_DATABASE_URL=postgres://...`).
+  - Multi-replica deployments must also mount one shared volume as the blob directory on every replica. Otherwise a worker on one replica cannot read a file that another replica received.
+  - The blob directory has no size quota. Plan disk space for the largest upload (`gateway.maxContentBytes`, 64 MiB by default) times the number of submissions that can be queued or running at once.
   - Provider adapter execution, aggregation, and policy evaluation are staged in subsequent releases.
+  - **`completed` is not a security verdict yet.** No provider adapters run in this release, so every valid submission reaches `completed` without being scanned. The gateway logs a warning about this at startup.
+  - **Uploaded content is not scanned yet.** The bytes of a `content` upload are stored for the provider adapters, but no adapter runs in this release. So today a submission completes at once and its file is deleted right away. The submission record keeps only the SHA-256, size, filename, and media type.
+  - **Authentication is off by default.** Set `SCINTX_AUTH_BEARER_TOKEN` (or `SCINTX_AUTH_BEARER_TOKEN_FILE`) before exposing the gateway. The gateway logs a warning at startup when no token is set.
 
 ---
 

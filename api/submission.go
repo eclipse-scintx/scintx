@@ -73,10 +73,25 @@ type Submission struct {
 	ID            string           `json:"id"`
 	Status        SubmissionStatus `json:"status"`
 	Attempts      int              `json:"attempts,omitempty"`
-	AcceptedAt    time.Time        `json:"acceptedAt"`
-	CompletedAt   *time.Time       `json:"completedAt,omitempty"`
-	Artifact      ArtifactInput    `json:"artifact"`
-	Error         string           `json:"error,omitempty"`
+	// Interruptions counts attempts that a graceful gateway shutdown cut
+	// short. Those attempts were not the submission's fault, so they do not
+	// count toward the attempt cap (see AttemptsExhausted).
+	Interruptions int           `json:"interruptions,omitempty"`
+	AcceptedAt    time.Time     `json:"acceptedAt"`
+	CompletedAt   *time.Time    `json:"completedAt,omitempty"`
+	Artifact      ArtifactInput `json:"artifact"`
+	Error         string        `json:"error,omitempty"`
+}
+
+// AttemptsExhausted reports whether the submission has used up its attempt
+// budget of maxAttempts.
+//
+// Attempts is also the fencing token, so it must only ever go up. That is why
+// a shutdown does not hand an attempt back by lowering Attempts. Instead the
+// shutdown adds one to Interruptions, and the budget check subtracts it here.
+// Before this, three deploys during one long scan failed the scan for good.
+func (s Submission) AttemptsExhausted(maxAttempts int) bool {
+	return s.Attempts-s.Interruptions >= maxAttempts
 }
 
 // TransitionTo validates and applies a state transition on the Submission.

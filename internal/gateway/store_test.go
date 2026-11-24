@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yeeth-security/scintx/api"
-	"github.com/yeeth-security/scintx/internal/config"
+	"github.com/eclipse-scintx/scintx/api"
+	"github.com/eclipse-scintx/scintx/internal/config"
 )
 
 func TestSQLStoreLeaseRecoveryAndAttemptCap(t *testing.T) {
@@ -181,7 +181,8 @@ func TestConcurrentLongAndShortTasksAndRetryableError(t *testing.T) {
 		return nil
 	}
 	// Settings go in before the workers start (see withTestSettings).
-	orch := newOrchestrator(cfg, store, withTestSettings(0, 0, hook))
+	// The retry backoff is cut to 5ms so the test does not wait 5 seconds.
+	orch := newOrchestrator(cfg, store, withTestSettings(0, 0, hook), withRetryBackoff(5*time.Millisecond))
 	defer orch.Shutdown()
 
 	longSub, _ := orch.Submit(context.Background(), api.ArtifactInput{PURL: "pkg:generic/long-binary-scan@1.0.0"})

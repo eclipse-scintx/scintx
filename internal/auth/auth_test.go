@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/yeeth-security/scintx/internal/auth"
+	"github.com/eclipse-scintx/scintx/internal/auth"
 )
 
 func TestBearerAuthMiddleware(t *testing.T) {

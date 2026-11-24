@@ -5,11 +5,9 @@
 package api
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"mime"
 	"strings"
 )
 
@@ -24,28 +22,24 @@ const SchemaVersionV1 = "1"
 // DefaultMaxContentBytes is the default 64 MiB limit for raw artifact uploads.
 const DefaultMaxContentBytes int64 = 64 * 1024 * 1024
 
-// MaxFilenameLength and MaxMediaTypeLength bound untrusted multipart headers.
-const (
-	MaxFilenameLength  = 255
-	MaxMediaTypeLength = 128
-)
-
-// ContentMetadata records metadata derived from raw artifact content bytes.
-type ContentMetadata struct {
-	SHA256    string `json:"sha256"`
-	SizeBytes int64  `json:"sizeBytes"`
-	Filename  string `json:"filename,omitempty"`
-	MediaType string `json:"mediaType,omitempty"`
-}
-
 // ArtifactInput represents the submitted artifact for evaluation.
-// Exactly one of PURL, Digest, or Content must be supplied (exclusive artifact types).
+// Exactly one of PURL, Digest, or an uploaded file must be supplied
+// (exclusive artifact types).
 type ArtifactInput struct {
-	PURL        string           `json:"purl,omitempty"`
-	Digest      string           `json:"digest,omitempty"`
-	Content     []byte           `json:"-"`
-	Filename    string           `json:"-"`
-	MediaType   string           `json:"-"`
+	PURL   string `json:"purl,omitempty"`
+	Digest string `json:"digest,omitempty"`
+
+	// Upload holds what the server measured while streaming an uploaded file
+	// (see HashContent). It is tagged json:"-" so a client can never set it.
+	//
+	// It replaces the old Content []byte, Filename, and MediaType fields. Those
+	// forced the whole upload into memory just to hash it. Only the hash and
+	// size were ever kept, so the bytes are no longer buffered at all.
+	Upload *ContentMetadata `json:"-"`
+
+	// ContentMeta is the validated, public form of Upload. Only the server
+	// fills it in. It keeps its JSON tag because stored submissions are read
+	// back through it, but it is rejected when a client sends it.
 	ContentMeta *ContentMetadata `json:"content,omitempty"`
 }
 
@@ -57,12 +51,15 @@ func ValidateAndNormalizeArtifact(in ArtifactInput, maxBytes int64) (ArtifactInp
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxContentBytes
 	}
+	// A client must not hand us "content" metadata in JSON. The server
+	// computes it from real bytes. Before this check the object was silently
+	// dropped, so a request could look like it carried content when it did not.
+	if in.ContentMeta != nil {
+		return ArtifactInput{}, fmt.Errorf("%w: content metadata is computed by the server; upload the file with multipart/form-data", ErrValidation)
+	}
 	out := ArtifactInput{
-		PURL:      strings.TrimSpace(in.PURL),
-		Digest:    strings.ToLower(strings.TrimSpace(in.Digest)),
-		Content:   in.Content,
-		Filename:  strings.TrimSpace(in.Filename),
-		MediaType: strings.TrimSpace(in.MediaType),
+		PURL:   strings.TrimSpace(in.PURL),
+		Digest: strings.ToLower(strings.TrimSpace(in.Digest)),
 	}
 
 	providedCount := 0
@@ -72,15 +69,11 @@ func ValidateAndNormalizeArtifact(in ArtifactInput, maxBytes int64) (ArtifactInp
 	if out.Digest != "" {
 		providedCount++
 	}
-	if len(out.Content) > 0 {
+	if in.Upload != nil {
 		providedCount++
 	}
 	if providedCount != 1 {
 		return ArtifactInput{}, fmt.Errorf("%w: artifact requires exactly one of purl, digest, or content", ErrValidation)
-	}
-
-	if len(out.Content) == 0 && (out.Filename != "" || out.MediaType != "") {
-		return ArtifactInput{}, fmt.Errorf("%w: filename and mediaType are only permitted with content uploads", ErrValidation)
 	}
 
 	if out.PURL != "" {
@@ -97,82 +90,20 @@ func ValidateAndNormalizeArtifact(in ArtifactInput, maxBytes int64) (ArtifactInp
 		}
 	}
 
-	if len(out.Content) > 0 {
-		if int64(len(out.Content)) > maxBytes {
-			return ArtifactInput{}, fmt.Errorf("%w: artifact content size %d exceeds maximum %d bytes", ErrValidation, len(out.Content), maxBytes)
-		}
-		cleanFilename, err := ValidateFilename(out.Filename)
+	if in.Upload != nil {
+		upload := *in.Upload
+		upload.Filename = strings.TrimSpace(upload.Filename)
+		upload.MediaType = strings.TrimSpace(upload.MediaType)
+		meta, err := validateUpload(upload, maxBytes)
 		if err != nil {
 			return ArtifactInput{}, err
 		}
-		cleanMediaType, err := ValidateMediaType(out.MediaType)
-		if err != nil {
-			return ArtifactInput{}, err
-		}
-
-		sum256 := sha256.Sum256(out.Content)
-		hex256 := hex.EncodeToString(sum256[:])
-		sizeBytes := int64(len(out.Content))
-
-		// Release raw byte slice reference once metadata is computed so
-		// persisted/in-memory Submission records do not retain large blobs.
-		out.Content = nil
-		out.Filename = cleanFilename
-		out.MediaType = cleanMediaType
-		out.ContentMeta = &ContentMetadata{
-			SHA256:    hex256,
-			SizeBytes: sizeBytes,
-			Filename:  cleanFilename,
-			MediaType: cleanMediaType,
-		}
+		// Only the clean public metadata leaves this function. out.Upload
+		// stays nil, so the raw measured values are not carried any further.
+		out.ContentMeta = meta
 	}
 
 	return out, nil
-}
-
-// ValidateFilename validates an untrusted multipart upload filename, rejecting
-// control characters, null bytes, path separators, traversal names, and
-// oversized strings (failing closed).
-func ValidateFilename(name string) (string, error) {
-	if name == "" {
-		return "", nil
-	}
-	if len(name) > MaxFilenameLength {
-		return "", fmt.Errorf("%w: invalid filename: exceeds maximum length of %d bytes", ErrValidation, MaxFilenameLength)
-	}
-	if name == "." || name == ".." {
-		return "", fmt.Errorf("%w: invalid filename %q", ErrValidation, name)
-	}
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if c < 0x20 || c == 0x7f || c == '/' || c == '\\' {
-			return "", fmt.Errorf("%w: invalid filename: contains forbidden character", ErrValidation)
-		}
-	}
-	return name, nil
-}
-
-// ValidateMediaType validates and canonicalizes an untrusted multipart
-// Content-Type header value, failing closed on malformed MIME types or control
-// characters.
-func ValidateMediaType(mt string) (string, error) {
-	if mt == "" {
-		return "", nil
-	}
-	if len(mt) > MaxMediaTypeLength {
-		return "", fmt.Errorf("%w: invalid mediaType: exceeds maximum length of %d bytes", ErrValidation, MaxMediaTypeLength)
-	}
-	for i := 0; i < len(mt); i++ {
-		c := mt[i]
-		if c < 0x20 || c == 0x7f {
-			return "", fmt.Errorf("%w: invalid mediaType: contains control character", ErrValidation)
-		}
-	}
-	mediaType, _, err := mime.ParseMediaType(mt)
-	if err != nil || mediaType == "" {
-		return "", fmt.Errorf("%w: invalid mediaType %q", ErrValidation, mt)
-	}
-	return mediaType, nil
 }
 
 // ValidateDigest verifies that a digest string uses a supported algorithm

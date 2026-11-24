@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yeeth-security/scintx/api"
+	"github.com/eclipse-scintx/scintx/api"
 	"gopkg.in/yaml.v3"
 )
 
@@ -47,6 +47,10 @@ type StorageSettings struct {
 	// DSN is a SQLite path/URI (e.g. "file:data/scintx.db") or a PostgreSQL
 	// connection URI ("postgres://..."). Use "memory" for in-memory storage.
 	DSN string `yaml:"dsn" json:"dsn"`
+	// BlobDir is the directory that holds uploaded content until its
+	// submission is finished. Instances that share one database must share it.
+	// An empty value is refused at startup by blob.OpenFileStore.
+	BlobDir string `yaml:"blobDir" json:"blobDir"`
 }
 
 // AuthSettings configures optional inbound authentication for /v1/* endpoints.
@@ -77,7 +81,8 @@ func Default() *Config {
 			Workers:         DefaultWorkers(),
 		},
 		Storage: StorageSettings{
-			DSN: "file:data/scintx.db",
+			DSN:     "file:data/scintx.db",
+			BlobDir: "data/blobs",
 		},
 	}
 }
@@ -130,6 +135,9 @@ func applyEnvOverrides(cfg *Config) error {
 			return fmt.Errorf("invalid SCINTX_WORKERS %q: must be a positive integer", v)
 		}
 		cfg.Gateway.Workers = workers
+	}
+	if v := strings.TrimSpace(os.Getenv("SCINTX_BLOB_DIR")); v != "" {
+		cfg.Storage.BlobDir = v
 	}
 
 	dbDSN, err := resolveSecret("SCINTX_DATABASE_URL")

@@ -12,7 +12,25 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/yeeth-security/scintx/api"
+	"github.com/eclipse-scintx/scintx/api"
+)
+
+// The two queries below find the next claimable row. They are named constants
+// so the tests can check their query plans. The status filter is written
+// exactly like the WHERE clause of idx_submissions_queue (see sql_store.go).
+// That match is what lets the database use the index.
+const (
+	findClaimableSQLite = `
+SELECT payload_json, attempts FROM submissions
+WHERE status IN ('accepted', 'running') AND (lease_until = '' OR lease_until <= ?)
+ORDER BY attempts ASC, accepted_at ASC
+LIMIT 1`
+	findClaimablePostgres = `
+SELECT payload_json, attempts FROM submissions
+WHERE status IN ('accepted', 'running') AND (lease_until = '' OR lease_until <= $1)
+ORDER BY attempts ASC, accepted_at ASC
+LIMIT 1
+FOR UPDATE SKIP LOCKED`
 )
 
 // ClaimNextSubmission atomically claims the next eligible submission in
@@ -67,8 +85,7 @@ func (s *SQLStore) RenewLease(ctx context.Context, id string, attempt int, now t
 }
 
 // ReleaseLease clears lease_until for an active "running" submission owned by
-// the given attempt number when a worker is interrupted by graceful shutdown or
-// encounters a retryable transient failure.
+// the given attempt number when a worker is interrupted by graceful shutdown.
 func (s *SQLStore) ReleaseLease(ctx context.Context, id string, attempt int) error {
 	query := `UPDATE submissions SET lease_until = '' WHERE id = ? AND status = 'running' AND attempts = ?`
 	if s.postgres {
@@ -96,18 +113,9 @@ func (s *SQLStore) claimOneCandidate(ctx context.Context, nowUTC time.Time, nowS
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	findQuery := `
-SELECT payload_json, attempts FROM submissions
-WHERE status IN ('accepted', 'running') AND (lease_until = '' OR lease_until <= ?)
-ORDER BY attempts ASC, accepted_at ASC
-LIMIT 1`
+	findQuery := findClaimableSQLite
 	if s.postgres {
-		findQuery = `
-SELECT payload_json, attempts FROM submissions
-WHERE status IN ('accepted', 'running') AND (lease_until = '' OR lease_until <= $1)
-ORDER BY attempts ASC, accepted_at ASC
-LIMIT 1
-FOR UPDATE SKIP LOCKED`
+		findQuery = findClaimablePostgres
 	}
 
 	var (
@@ -127,7 +135,9 @@ FOR UPDATE SKIP LOCKED`
 		return api.Submission{}, false, false, err
 	}
 
-	exhausted := sub.Attempts >= maxAttempts
+	// AttemptsExhausted leaves out attempts that a graceful shutdown cut
+	// short, so deploys cannot use up a submission's attempt budget.
+	exhausted := sub.AttemptsExhausted(maxAttempts)
 	newLease := leaseStr
 	var completedAt sql.NullString
 

@@ -62,6 +62,29 @@ storage:
 	}
 }
 
+// TestBlobDirDefaultAndOverride covers the blob directory setting: it has a
+// default, and the environment wins over the file. (An empty value is
+// refused when the directory is opened. The blob package tests that.)
+func TestBlobDirDefaultAndOverride(t *testing.T) {
+	if got := Default().Storage.BlobDir; got != "data/blobs" {
+		t.Fatalf("got default BlobDir %q, want data/blobs", got)
+	}
+
+	cfgFile := filepath.Join(t.TempDir(), "gateway.yaml")
+	if err := os.WriteFile(cfgFile, []byte("storage:\n  blobDir: \"from-yaml\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(cfgFile)
+	if err != nil || cfg.Storage.BlobDir != "from-yaml" {
+		t.Fatalf("expected the file value, got %+v err=%v", cfg, err)
+	}
+	t.Setenv("SCINTX_BLOB_DIR", "from-env")
+	cfg, err = Load(cfgFile)
+	if err != nil || cfg.Storage.BlobDir != "from-env" {
+		t.Fatalf("expected the env value to win, got %+v err=%v", cfg, err)
+	}
+}
+
 func TestLoadFailClosedOnUnknownFieldOrEmptySecretFile(t *testing.T) {
 	dir := t.TempDir()
 	badYAML := filepath.Join(dir, "bad.yaml")

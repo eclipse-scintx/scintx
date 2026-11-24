@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Blob storage for `content` uploads (`SCINTX_BLOB_DIR` / `storage.blobDir`,
+  default `data/blobs`). Uploads are streamed to disk with constant memory,
+  kept only until their submission is `completed` or `failed`, and swept
+  after a crash.
 - OSV provider: `vscode-extension` PURL support with ecosystem fallback when
   PURL-only queries miss (e.g. Open VSX malware indexed as
   `VSCode:https://open-vsx.org` / `publisher.name`).
@@ -37,4 +41,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Artifact read failures now include the underlying error detail; size breaches
   use problem title `artifact_too_large` instead of a generic 400.
 
-[Unreleased]: https://github.com/yeeth-security/scintx/commits/HEAD
+[Unreleased]: https://github.com/eclipse-scintx/scintx/commits/HEAD

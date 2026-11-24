@@ -10,12 +10,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/yeeth-security/scintx/api"
+	"github.com/eclipse-scintx/scintx/api"
 )
 
 // DefaultLeaseDuration is the short time window a worker holds a claim on a
@@ -33,13 +31,19 @@ const DefaultMaxAttempts = 3
 // still terminating hung tasks.
 const DefaultMaxExecutionDuration = 15 * time.Minute
 
+// DefaultRetryBackoff is the wait before the first retry of an attempt that
+// failed with ErrRetryable. Each later retry waits twice as long (5s, 10s,
+// and so on). Before this existed a retry ran at once, so a provider that
+// answered "429 too many requests" used up every attempt within a millisecond.
+const DefaultRetryBackoff = 5 * time.Second
+
 // ErrStaleAttempt is returned when a worker attempts to renew a lease or write
 // results for a submission whose attempt counter has moved on (fencing token).
 var ErrStaleAttempt = errors.New("stale submission attempt fenced")
 
 // ErrRetryable wraps transient adapter errors (such as HTTP 429/503 or temporary
-// subprocess resource failures) so the worker releases the lease and retries up
-// to maxAttempts instead of failing permanently on the first attempt.
+// subprocess resource failures) so the worker retries after a backoff, up to
+// maxAttempts, instead of failing permanently on the first attempt.
 var ErrRetryable = errors.New("retryable submission execution error")
 
 // Store abstracts submission persistence and lease-based work claiming across
@@ -53,10 +57,15 @@ type Store interface {
 	ClaimNextSubmission(ctx context.Context, now time.Time, leaseDuration time.Duration, maxAttempts int) (api.Submission, bool, error)
 	// RenewLease extends the lease_until timestamp for an in-flight "running"
 	// submission owned by the given attempt number.
+	//
+	// It sets lease_until to now + leaseDuration. The orchestrator also uses
+	// it to delay a retry: a lease in the future stops any worker from
+	// claiming the row until the backoff is over.
 	RenewLease(ctx context.Context, id string, attempt int, now time.Time, leaseDuration time.Duration) error
 	// ReleaseLease clears the active lease_until timestamp for an in-flight
-	// "running" submission when a worker is interrupted by shutdown or encounters
-	// a transient ErrRetryable failure.
+	// "running" submission when a worker is interrupted by shutdown. The row
+	// can then be claimed again at once. (Retryable failures no longer use
+	// this. They wait out a backoff through RenewLease instead.)
 	ReleaseLease(ctx context.Context, id string, attempt int) error
 	// GetSubmission retrieves a submission by ID.
 	GetSubmission(ctx context.Context, id string) (api.Submission, bool, error)
@@ -77,19 +86,4 @@ func OpenStore(dsn string) (Store, error) {
 		return nil, fmt.Errorf("storage DSN must not be empty")
 	}
 	return OpenSQLStore(trimmed)
-}
-
-func ensureSQLiteDir(dsn string) error {
-	path := strings.TrimPrefix(strings.TrimSpace(dsn), "file:")
-	if idx := strings.IndexByte(path, '?'); idx >= 0 {
-		path = path[:idx]
-	}
-	if path == "" || path == ":memory:" {
-		return nil
-	}
-	dir := filepath.Dir(path)
-	if dir == "." || dir == "" {
-		return nil
-	}
-	return os.MkdirAll(dir, 0o750)
 }

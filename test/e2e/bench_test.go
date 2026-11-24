@@ -12,9 +12,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/yeeth-security/scintx/internal/config"
-	"github.com/yeeth-security/scintx/internal/gateway"
-	"github.com/yeeth-security/scintx/internal/server"
+	"github.com/eclipse-scintx/scintx/internal/config"
+	"github.com/eclipse-scintx/scintx/internal/gateway"
+	"github.com/eclipse-scintx/scintx/internal/server"
 )
 
 func newKeepAliveClient(ts *httptest.Server) *http.Client {

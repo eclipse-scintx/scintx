@@ -10,38 +10,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	// Register pure-Go PostgreSQL and SQLite database/sql drivers.
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 
-	"github.com/yeeth-security/scintx/api"
+	"github.com/eclipse-scintx/scintx/api"
 )
-
-const createSubmissionsTableSQL = `
-CREATE TABLE IF NOT EXISTS submissions (
-	id           TEXT PRIMARY KEY,
-	status       TEXT NOT NULL,
-	attempts     INTEGER NOT NULL DEFAULT 0,
-	lease_until  TEXT NOT NULL DEFAULT '',
-	accepted_at  TEXT NOT NULL,
-	completed_at TEXT,
-	payload_json TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_submissions_claimable
-ON submissions(status, lease_until, attempts, accepted_at);`
-
-// sqliteHighThroughputPragmas configures WAL mode with synchronous=NORMAL,
-// in-memory temp tables, and a 32 MiB page cache. This delivers 5x-10x higher
-// write throughput while remaining crash-safe across container restarts.
-const sqliteHighThroughputPragmas = `
-PRAGMA journal_mode=WAL;
-PRAGMA synchronous=NORMAL;
-PRAGMA busy_timeout=5000;
-PRAGMA temp_store=MEMORY;
-PRAGMA cache_size=-32000;`
 
 // SQLStore persists submissions in SQLite or PostgreSQL via database/sql and
 // implements lease-based work claiming and attempt fencing.
@@ -53,13 +29,16 @@ type SQLStore struct {
 // OpenSQLStore opens a SQLite or PostgreSQL database connection, configures
 // high-throughput WAL/pooling settings, and initializes the schema.
 func OpenSQLStore(dsn string) (*SQLStore, error) {
-	lower := strings.ToLower(strings.TrimSpace(dsn))
-	isPostgres := strings.HasPrefix(lower, "postgres://") || strings.HasPrefix(lower, "postgresql://")
+	isPostgres := isPostgresDSN(dsn)
 	driver := "sqlite"
 	if isPostgres {
 		driver = "pgx"
-	} else if err := ensureSQLiteDir(dsn); err != nil {
-		return nil, err
+	} else {
+		if err := ensureSQLiteDir(dsn); err != nil {
+			return nil, err
+		}
+		// Put the pragmas in the DSN so every connection gets them.
+		dsn = sqliteDSNWithPragmas(dsn)
 	}
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
@@ -72,11 +51,8 @@ func OpenSQLStore(dsn string) (*SQLStore, error) {
 		return nil, fmt.Errorf("ping %s database: %w", driver, err)
 	}
 	if !isPostgres {
+		// SQLite allows one writer at a time, so one connection is enough.
 		db.SetMaxOpenConns(1)
-		if _, err := db.ExecContext(ctx, sqliteHighThroughputPragmas); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("configure sqlite pragmas: %w", err)
-		}
 	} else {
 		db.SetMaxOpenConns(32)
 		db.SetMaxIdleConns(16)
@@ -114,6 +90,13 @@ func (s *SQLStore) PutSubmission(ctx context.Context, sub api.Submission) error 
 		}
 		_, err := s.db.ExecContext(ctx, query, sub.ID, string(sub.Status), acceptedAt, completedAt, string(payload))
 		return err
+	}
+	// "accepted" is only ever the first state. A submission that has been
+	// claimed (attempts > 0) must never go back to it. Without this check the
+	// generic UPDATE below moved a running row back to "accepted", which the
+	// state machine forbids and which MemoryStore already refused.
+	if sub.Status == api.SubmissionAccepted {
+		return fmt.Errorf("invalid submission state transition for %s: a claimed submission cannot return to %q", sub.ID, sub.Status)
 	}
 
 	// Fast path 2: Atomic fenced UPDATE enforcing both state machine and attempt token.

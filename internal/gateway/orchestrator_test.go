@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yeeth-security/scintx/api"
-	"github.com/yeeth-security/scintx/internal/config"
+	"github.com/eclipse-scintx/scintx/api"
+	"github.com/eclipse-scintx/scintx/internal/config"
 )
 
 func TestOrchestratorSubmitAndStatus(t *testing.T) {
@@ -162,6 +162,11 @@ func TestShutdownReleasesActiveLeaseImmediately(t *testing.T) {
 	reclaimed, ok, err := store.ClaimNextSubmission(context.Background(), time.Now().UTC(), 30*time.Second, 3)
 	if err != nil || !ok || reclaimed.ID != sub.ID || reclaimed.Attempts != 2 {
 		t.Fatalf("expected immediate re-claim after shutdown lease release, got ok=%v sub=%+v err=%v", ok, reclaimed, err)
+	}
+	// The shutdown must also record one interruption, so the cut-short
+	// attempt does not count toward the attempt cap.
+	if reclaimed.Interruptions != 1 {
+		t.Fatalf("expected interruptions=1 after a graceful shutdown, got %d", reclaimed.Interruptions)
 	}
 }
 

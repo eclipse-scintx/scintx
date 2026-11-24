@@ -15,10 +15,24 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yeeth-security/scintx/internal/config"
-	"github.com/yeeth-security/scintx/internal/gateway"
-	"github.com/yeeth-security/scintx/internal/server"
+	"github.com/eclipse-scintx/scintx/internal/blob"
+	"github.com/eclipse-scintx/scintx/internal/config"
+	"github.com/eclipse-scintx/scintx/internal/gateway"
+	"github.com/eclipse-scintx/scintx/internal/server"
 )
+
+// warnAboutRiskyDefaults logs a warning for each default that is fine for a
+// local demo but unsafe or misleading in production. Both used to be silent.
+func warnAboutRiskyDefaults(cfg *config.Config, orch *gateway.Orchestrator) {
+	if cfg.Auth.BearerToken == "" {
+		slog.Warn("no bearer token is configured: anyone who can reach this address can create and read submissions; " +
+			"set SCINTX_AUTH_BEARER_TOKEN or SCINTX_AUTH_BEARER_TOKEN_FILE")
+	}
+	if !orch.HasExecutor() {
+		slog.Warn("no provider adapters are configured: submissions reach \"completed\" without being scanned; " +
+			"\"completed\" is not a security verdict in this release")
+	}
+}
 
 func runServe() error {
 	cfgPath := os.Getenv("SCINTX_CONFIG")
@@ -39,8 +53,17 @@ func runServe() error {
 	}
 	defer store.Close()
 
-	orch := gateway.NewOrchestrator(cfg, store)
+	// Open the blob directory now, before serving. A missing or read-only
+	// volume then stops the gateway at startup with a clear message. Without
+	// this check it would only show up as a failed upload much later.
+	blobs, err := blob.OpenFileStore(cfg.Storage.BlobDir)
+	if err != nil {
+		return fmt.Errorf("open blob storage %q: %w", cfg.Storage.BlobDir, err)
+	}
+
+	orch := gateway.NewOrchestratorWithBlobs(cfg, store, blobs)
 	srv := server.New(cfg, store, orch)
+	warnAboutRiskyDefaults(cfg, orch)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -51,6 +74,11 @@ func runServe() error {
 			"instanceId", cfg.Gateway.InstanceID,
 			"version", cfg.Gateway.Version,
 			"listenAddr", cfg.Gateway.ListenAddr,
+			// The revision is a short hash of the resolved configuration. It
+			// was computed before but never shown. Logging it lets an
+			// operator see at a glance whether two instances run the same
+			// configuration.
+			"configRevision", cfg.Revision,
 		)
 		if serveErr := srv.Start(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			errCh <- serveErr

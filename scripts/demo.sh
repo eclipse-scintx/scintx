@@ -19,6 +19,8 @@ source "$(dirname "$0")/lib.sh"
 DEMO_PORT="${SCINTX_DEMO_PORT:-18080}"
 DEMO_URL="http://127.0.0.1:${DEMO_PORT}"
 DEMO_DB="$(mktemp -u /tmp/scintx-demo-XXXXXX.db)"
+# The demo gets its own blob directory, so it never writes into ./data/blobs.
+DEMO_BLOBS="$(mktemp -d /tmp/scintx-demo-blobs-XXXXXX)"
 GW_PID=""
 
 cleanup() {
@@ -26,12 +28,14 @@ cleanup() {
     kill "${GW_PID}" >/dev/null 2>&1 || true
   fi
   rm -f "${DEMO_DB}" "${DEMO_DB}-wal" "${DEMO_DB}-shm" /tmp/scintx-demo-err.json
+  rm -rf "${DEMO_BLOBS}"
 }
 trap cleanup EXIT
 
 start_gateway() {
   SCINTX_ADDR="127.0.0.1:${DEMO_PORT}" \
   SCINTX_DATABASE_URL="file:${DEMO_DB}" \
+  SCINTX_BLOB_DIR="${DEMO_BLOBS}" \
     "${BINARY}" serve >/tmp/scintx-demo.log 2>&1 &
   GW_PID=$!
   for _ in $(seq 1 30); do

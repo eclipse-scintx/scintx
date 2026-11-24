@@ -6,6 +6,8 @@ package gateway
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"time"
 )
 
@@ -13,6 +15,11 @@ import (
 // to keep each file small. The worker goroutines only READ orchestrator
 // settings (leaseDuration, maxAttempts, execHook). Those settings must be
 // final before the workers start, which newOrchestrator guarantees.
+
+// claimErrorLogInterval is the shortest gap between two "claim failed" log
+// lines. Every idle worker retries a claim about ten times per second, so an
+// unthrottled log would flood during a database outage.
+const claimErrorLogInterval = 5 * time.Second
 
 // claimAndExecuteOne atomically claims a single eligible submission and executes
 // it outside any global lock so other workers can run in parallel.
@@ -36,15 +43,40 @@ func (o *Orchestrator) claimAndExecuteOne(ctx context.Context, stopOnShutdown bo
 			}
 		}
 	}()
-	sub, ok, err := o.store.ClaimNextSubmission(ctx, time.Now().UTC(), o.leaseDuration, o.maxAttempts)
-	if err != nil || !ok {
+	// claimedAt is the "now" the store uses to set the lease. The heartbeat
+	// gets the same value, so its local deadline matches the stored lease.
+	claimedAt := time.Now().UTC()
+	sub, ok, err := o.store.ClaimNextSubmission(ctx, claimedAt, o.leaseDuration, o.maxAttempts)
+	if err != nil {
+		// This error used to be dropped, so a database outage was invisible.
+		o.logClaimError(err)
+		return false
+	}
+	if !ok {
 		return false
 	}
 	// Cascade wake signal so another idle worker immediately claims the next
 	// queued submission while this worker executes sub.
 	o.signalWake()
-	o.ExecuteClaimedSubmission(ctx, sub)
+	o.ExecuteClaimedSubmission(ctx, sub, claimedAt)
 	return true
+}
+
+// logClaimError reports a failed claim, at most once per claimErrorLogInterval.
+// A canceled context is normal during shutdown, so it is not logged.
+func (o *Orchestrator) logClaimError(err error) {
+	if errors.Is(err, context.Canceled) {
+		return
+	}
+	now := time.Now().UnixNano()
+	last := o.lastClaimErrLog.Load()
+	if last != 0 && now-last < int64(claimErrorLogInterval) {
+		return
+	}
+	// CompareAndSwap lets exactly one of several racing workers write the line.
+	if o.lastClaimErrLog.CompareAndSwap(last, now) {
+		slog.Error("claim next submission failed; workers will keep retrying", "error", err)
+	}
 }
 
 // signalWake nudges one idle worker without blocking the caller.

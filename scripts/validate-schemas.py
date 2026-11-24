@@ -75,6 +75,22 @@ FIXTURES = [
         True,
     ),
     (
+        # A submission that was interrupted by one graceful shutdown and then
+        # retried. "interruptions" must be accepted by the schema.
+        "submission.schema.json",
+        "submission running after a shutdown interruption",
+        {
+            "schemaVersion": "1",
+            "id": "submission-" + "b" * 32,
+            "status": "running",
+            "attempts": 2,
+            "interruptions": 1,
+            "acceptedAt": "2026-04-20T21:14:03Z",
+            "artifact": {"purl": "pkg:npm/lodash@4.17.20"},
+        },
+        True,
+    ),
+    (
         "submission.schema.json",
         "submission invalid id format (should fail)",
         {

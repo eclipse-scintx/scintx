@@ -7,17 +7,21 @@ package server
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strings"
 
-	"github.com/yeeth-security/scintx/api"
+	"github.com/eclipse-scintx/scintx/api"
+	"github.com/eclipse-scintx/scintx/internal/blob"
 )
 
 type createSubmissionRequest struct {
 	Artifact api.ArtifactInput `json:"artifact"`
+	// content is the staged file of a multipart upload. It is nil for JSON
+	// requests. It is unexported, so a JSON body can never set it.
+	content blob.Upload
 }
 
 // handleHealthz is the liveness probe.
@@ -37,7 +41,11 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.Ping(r.Context()); err != nil {
-		writeProblem(w, http.StatusServiceUnavailable, "storage_unavailable", err.Error())
+		// This endpoint needs no login, and a database error can name the
+		// host, user, and database. So the detail goes to the log only and
+		// the caller gets a fixed message.
+		slog.Warn("readiness check failed: storage ping error", "error", err)
+		writeProblem(w, http.StatusServiceUnavailable, "storage_unavailable", "storage is not reachable")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -80,17 +88,36 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err != nil {
+		// An oversized upload is found while the body streams by. It is a
+		// validation failure (422), the same as before streaming was added.
+		if errors.Is(err, api.ErrValidation) {
+			writeProblem(w, http.StatusUnprocessableEntity, "validation_failed", err.Error())
+			return
+		}
+		// The upload could not be written to blob storage (a full disk, for
+		// example). That is our fault, not the client's, so it is a 500. The
+		// real error can name file paths, so it goes to the log only.
+		if errors.Is(err, blob.ErrStorage) {
+			slog.Error("store uploaded content failed", "error", err)
+			writeProblem(w, http.StatusInternalServerError, "storage_error", "the upload could not be stored")
+			return
+		}
 		writeProblem(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
 
-	sub, err := s.orchestrator.Submit(r.Context(), req.Artifact)
+	// SubmitWithContent takes over the staged upload (nil for JSON requests).
+	// It keeps the bytes on success and deletes them on every error.
+	sub, err := s.orchestrator.SubmitWithContent(r.Context(), req.Artifact, req.content)
 	if err != nil {
 		if errors.Is(err, api.ErrValidation) {
 			writeProblem(w, http.StatusUnprocessableEntity, "validation_failed", err.Error())
 			return
 		}
-		writeProblem(w, http.StatusInternalServerError, "storage_error", err.Error())
+		// Raw storage errors can leak database details. Log the real error
+		// and send the caller a fixed message.
+		slog.Error("store new submission failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "storage_error", "the submission could not be stored")
 		return
 	}
 
@@ -115,53 +142,6 @@ func (s *Server) parseJSONSubmission(w http.ResponseWriter, r *http.Request) (cr
 	return req, nil
 }
 
-func (s *Server) parseMultipartSubmission(w http.ResponseWriter, r *http.Request) (createSubmissionRequest, error) {
-	maxBytes := s.cfg.Gateway.MaxContentBytes
-	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+(1<<20))
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		return createSubmissionRequest{}, err
-	}
-	if r.MultipartForm != nil {
-		defer func() { _ = r.MultipartForm.RemoveAll() }()
-		// Fail closed on any unknown form field or file part name.
-		for k := range r.MultipartForm.Value {
-			if k != "purl" && k != "digest" {
-				return createSubmissionRequest{}, fmt.Errorf("unknown multipart form field %q", k)
-			}
-		}
-		for k, files := range r.MultipartForm.File {
-			if k != "content" {
-				return createSubmissionRequest{}, fmt.Errorf("unknown multipart file field %q", k)
-			}
-			if len(files) > 1 {
-				return createSubmissionRequest{}, errors.New("multiple content file parts are not permitted")
-			}
-		}
-	}
-
-	req := createSubmissionRequest{
-		Artifact: api.ArtifactInput{
-			PURL:   strings.TrimSpace(r.FormValue("purl")),
-			Digest: strings.TrimSpace(r.FormValue("digest")),
-		},
-	}
-	file, header, err := r.FormFile("content")
-	if err != nil && !errors.Is(err, http.ErrMissingFile) {
-		return createSubmissionRequest{}, err
-	}
-	if err == nil {
-		defer file.Close()
-		data, readErr := io.ReadAll(file)
-		if readErr != nil {
-			return createSubmissionRequest{}, readErr
-		}
-		req.Artifact.Content = data
-		req.Artifact.Filename = header.Filename
-		req.Artifact.MediaType = header.Header.Get("Content-Type")
-	}
-	return req, nil
-}
-
 // handleGetSubmission handles GET /v1/submissions/{id}.
 // It validates the submission ID format before querying storage (fail-closed).
 func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
@@ -172,7 +152,9 @@ func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
 	}
 	sub, ok, err := s.store.GetSubmission(r.Context(), id)
 	if err != nil {
-		writeProblem(w, http.StatusInternalServerError, "storage_error", err.Error())
+		// Same rule as above: real error to the log, fixed message to the caller.
+		slog.Error("read submission failed", "id", id, "error", err)
+		writeProblem(w, http.StatusInternalServerError, "storage_error", "the submission could not be read")
 		return
 	}
 	if !ok {

@@ -6,7 +6,7 @@
 # Regenerate with:
 #
 #   go install github.com/google/go-licenses@latest
-#   go-licenses report ./... --ignore github.com/yeeth-security/scintx \
+#   go-licenses report ./... --ignore github.com/eclipse-scintx/scintx \
 #     | sort
 #
 # Modules that `go-licenses` cannot classify (build-tag-constrained platforms)

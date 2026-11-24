@@ -21,6 +21,11 @@
       "type": "integer",
       "minimum": 0
     },
+    "interruptions": {
+      "description": "Attempts cut short by a graceful gateway shutdown. They do not count toward the attempt cap.",
+      "type": "integer",
+      "minimum": 0
+    },
     "acceptedAt": {
       "type": "string",
       "format": "date-time"

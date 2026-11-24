@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/yeeth-security/scintx/api"
+	"github.com/eclipse-scintx/scintx/api"
 )
 
 // Middleware enforces Bearer token authentication on /v1/* routes when expectedToken is non-empty.

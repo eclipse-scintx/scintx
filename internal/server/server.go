@@ -12,10 +12,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/yeeth-security/scintx/api"
-	"github.com/yeeth-security/scintx/internal/auth"
-	"github.com/yeeth-security/scintx/internal/config"
-	"github.com/yeeth-security/scintx/internal/gateway"
+	"github.com/eclipse-scintx/scintx/api"
+	"github.com/eclipse-scintx/scintx/internal/auth"
+	"github.com/eclipse-scintx/scintx/internal/config"
+	"github.com/eclipse-scintx/scintx/internal/gateway"
 )
 
 // LifecycleState represents the explicit state machine of the HTTP gateway server:
@@ -28,6 +28,11 @@ const (
 	StateDraining LifecycleState = 2
 	StateStopped  LifecycleState = 3
 )
+
+// uploadReadTimeout bounds how long one whole request, body included, may
+// take to arrive. Five minutes lets a 64 MiB upload finish on a slow link
+// (about 1.7 Mbit/s) while still cutting off a client that stalls.
+const uploadReadTimeout = 5 * time.Minute
 
 // Server wraps the HTTP mux, configuration, store, orchestrator, and server
 // lifecycle state machine.
@@ -51,6 +56,12 @@ func New(cfg *config.Config, store gateway.Store, orch *gateway.Orchestrator) *S
 		Addr:              cfg.Gateway.ListenAddr,
 		Handler:           s.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
+		// The three timeouts below stop a slow client from holding a
+		// connection open forever. Before, only the header read was bounded,
+		// so a client could trickle an upload body with no time limit.
+		ReadTimeout:  uploadReadTimeout,
+		WriteTimeout: uploadReadTimeout + 30*time.Second,
+		IdleTimeout:  2 * time.Minute,
 	}
 	return s
 }

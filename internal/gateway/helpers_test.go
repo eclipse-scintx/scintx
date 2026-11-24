@@ -6,9 +6,10 @@ package gateway
 
 import (
 	"context"
+	"testing"
 	"time"
 
-	"github.com/yeeth-security/scintx/api"
+	"github.com/eclipse-scintx/scintx/api"
 )
 
 // hookFunc is the signature of the test-only execution hook.
@@ -30,5 +31,30 @@ func withTestSettings(lease, maxExec time.Duration, hook hookFunc) orchestratorO
 			o.maxExecutionDuration = maxExec
 		}
 		o.execHook = hook
+	}
+}
+
+// withRetryBackoff returns an option that sets the base retry delay. Tests
+// use a few milliseconds so they do not wait out the 5 second default.
+func withRetryBackoff(d time.Duration) orchestratorOption {
+	return func(o *Orchestrator) { o.retryBackoff = d }
+}
+
+// waitForStatus polls the store until the submission reaches want, and fails
+// the test after five seconds. orch.Wait cannot be used for this when a
+// retry backoff is involved: a submission that is waiting out its backoff is
+// not claimable, so Wait returns before the retry runs.
+func waitForStatus(t *testing.T, store Store, id string, want api.SubmissionStatus) api.Submission {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got, _, err := store.GetSubmission(context.Background(), id)
+		if err == nil && got.Status == want {
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("submission %s did not reach %q in time: last=%+v err=%v", id, want, got, err)
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }
