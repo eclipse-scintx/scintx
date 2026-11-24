@@ -133,17 +133,21 @@ func TestLeaseHeartbeatAndAttemptFencing(t *testing.T) {
 	}
 
 	// Verify heartbeat renewal keeps a slow execution alive past initial lease duration.
-	orch := NewOrchestrator(config.Default(), store)
-	defer orch.Shutdown()
-	orch.leaseDuration = 15 * time.Millisecond
-	orch.execHook = func(execCtx context.Context, _ api.Submission) error {
+	// The task runs for 3x the lease, so it only finishes on attempt 1 if the
+	// heartbeat keeps renewing. The lease is 150ms (not 15ms) on purpose: a
+	// renewal must land before the lease runs out, and under -race SQLite is
+	// slow enough that a 10ms margin failed about 1 run in 6.
+	hook := func(execCtx context.Context, _ api.Submission) error {
 		select {
-		case <-time.After(45 * time.Millisecond):
+		case <-time.After(450 * time.Millisecond):
 			return nil
 		case <-execCtx.Done():
 			return execCtx.Err()
 		}
 	}
+	// Settings go in before the workers start (see withTestSettings).
+	orch := newOrchestrator(config.Default(), store, withTestSettings(150*time.Millisecond, 0, hook))
+	defer orch.Shutdown()
 
 	slowSub, err := orch.Submit(ctx, api.ArtifactInput{PURL: "pkg:npm/react@18.3.1"})
 	if err != nil {
@@ -161,12 +165,10 @@ func TestConcurrentLongAndShortTasksAndRetryableError(t *testing.T) {
 	store := NewMemoryStore()
 	cfg := config.Default()
 	cfg.Gateway.Workers = 4
-	orch := NewOrchestrator(cfg, store)
-	defer orch.Shutdown()
 
 	longStarted := make(chan struct{})
 	fastDone := make(chan struct{})
-	orch.execHook = func(execCtx context.Context, sub api.Submission) error {
+	hook := func(execCtx context.Context, sub api.Submission) error {
 		if sub.Artifact.PURL == "pkg:generic/long-binary-scan@1.0.0" {
 			close(longStarted)
 			<-fastDone
@@ -178,6 +180,9 @@ func TestConcurrentLongAndShortTasksAndRetryableError(t *testing.T) {
 		close(fastDone)
 		return nil
 	}
+	// Settings go in before the workers start (see withTestSettings).
+	orch := newOrchestrator(cfg, store, withTestSettings(0, 0, hook))
+	defer orch.Shutdown()
 
 	longSub, _ := orch.Submit(context.Background(), api.ArtifactInput{PURL: "pkg:generic/long-binary-scan@1.0.0"})
 	<-longStarted

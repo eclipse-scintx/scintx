@@ -57,16 +57,15 @@ func TestOrchestratorSubmitAndStatus(t *testing.T) {
 
 func TestMaxExecutionDurationTimeout(t *testing.T) {
 	store := NewMemoryStore()
-	orch := NewOrchestrator(config.Default(), store)
-	defer orch.Shutdown()
-	orch.leaseDuration = 10 * time.Millisecond
-	orch.maxExecutionDuration = 25 * time.Millisecond
 
 	// Simulate a hung execution that waits until execCtx is canceled by maxExecutionDuration.
-	orch.execHook = func(execCtx context.Context, _ api.Submission) error {
+	hook := func(execCtx context.Context, _ api.Submission) error {
 		<-execCtx.Done()
 		return execCtx.Err()
 	}
+	// Settings go in before the workers start (see withTestSettings).
+	orch := newOrchestrator(config.Default(), store, withTestSettings(10*time.Millisecond, 25*time.Millisecond, hook))
+	defer orch.Shutdown()
 
 	sub, err := orch.Submit(context.Background(), api.ArtifactInput{PURL: "pkg:npm/lodash@4.17.20"})
 	if err != nil {
@@ -99,13 +98,8 @@ func TestHeartbeatLocalLeaseExpiryOnDBPartition(t *testing.T) {
 	ps := &partitionStore{Store: NewMemoryStore()}
 	ps.failRenew.Store(true)
 
-	orch := NewOrchestrator(config.Default(), ps)
-	defer orch.Shutdown()
-	orch.leaseDuration = 12 * time.Millisecond
-	orch.maxExecutionDuration = 5 * time.Second
-
 	var canceledByLeaseLoss atomic.Bool
-	orch.execHook = func(execCtx context.Context, sub api.Submission) error {
+	hook := func(execCtx context.Context, sub api.Submission) error {
 		if sub.Attempts == 1 {
 			// Attempt 1 experiences a DB partition: wait for local leaseDeadline to cancel execCtx.
 			<-execCtx.Done()
@@ -116,6 +110,9 @@ func TestHeartbeatLocalLeaseExpiryOnDBPartition(t *testing.T) {
 		}
 		return nil
 	}
+	// Settings go in before the workers start (see withTestSettings).
+	orch := newOrchestrator(config.Default(), ps, withTestSettings(12*time.Millisecond, 5*time.Second, hook))
+	defer orch.Shutdown()
 
 	sub, err := orch.Submit(context.Background(), api.ArtifactInput{PURL: "pkg:npm/lodash@4.17.20"})
 	if err != nil {
@@ -140,15 +137,14 @@ func TestShutdownReleasesActiveLeaseImmediately(t *testing.T) {
 	}
 	defer store.Close()
 
-	orch := NewOrchestrator(config.Default(), store)
-	orch.leaseDuration = 30 * time.Second
-
 	started := make(chan struct{})
-	orch.execHook = func(execCtx context.Context, _ api.Submission) error {
+	hook := func(execCtx context.Context, _ api.Submission) error {
 		close(started)
 		<-execCtx.Done()
 		return execCtx.Err()
 	}
+	// Settings go in before the workers start (see withTestSettings).
+	orch := newOrchestrator(config.Default(), store, withTestSettings(30*time.Second, 0, hook))
 
 	sub, err := orch.Submit(context.Background(), api.ArtifactInput{PURL: "pkg:npm/lodash@4.17.20"})
 	if err != nil {

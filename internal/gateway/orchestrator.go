@@ -38,9 +38,21 @@ type Orchestrator struct {
 	inFlight     atomic.Int32
 }
 
+// orchestratorOption adjusts an Orchestrator before its workers start.
+// Tests use it to shorten leases or install an execution hook.
+type orchestratorOption func(*Orchestrator)
+
 // NewOrchestrator constructs a gateway orchestrator and starts its concurrent
 // background worker pool.
 func NewOrchestrator(cfg *config.Config, store Store) *Orchestrator {
+	return newOrchestrator(cfg, store)
+}
+
+// newOrchestrator builds the orchestrator, applies opts, and only then starts
+// the workers. Settings must never change after the workers start: the
+// workers read them without a lock, so a later write is a data race. (Tests
+// used to set fields after construction, which the race detector caught.)
+func newOrchestrator(cfg *config.Config, store Store, opts ...orchestratorOption) *Orchestrator {
 	if cfg == nil {
 		cfg = config.Default()
 	}
@@ -62,6 +74,10 @@ func NewOrchestrator(cfg *config.Config, store Store) *Orchestrator {
 		wakeCh:               make(chan struct{}, workers),
 		idleNotify:           make(chan struct{}, 1),
 		stopCh:               make(chan struct{}),
+	}
+	// Apply options BEFORE starting any goroutine that reads these fields.
+	for _, opt := range opts {
+		opt(o)
 	}
 	for i := 0; i < workers; i++ {
 		o.wg.Add(1)
@@ -93,39 +109,6 @@ func (o *Orchestrator) Submit(ctx context.Context, artifact api.ArtifactInput) (
 	}
 	o.signalWake()
 	return sub, nil
-}
-
-// claimAndExecuteOne atomically claims a single eligible submission and executes
-// it outside any global lock so other workers can run in parallel.
-func (o *Orchestrator) claimAndExecuteOne(ctx context.Context, stopOnShutdown bool) bool {
-	if stopOnShutdown {
-		select {
-		case <-o.stopCh:
-			return false
-		default:
-		}
-	}
-	if ctx.Err() != nil {
-		return false
-	}
-	o.inFlight.Add(1)
-	defer func() {
-		if o.inFlight.Add(-1) == 0 {
-			select {
-			case o.idleNotify <- struct{}{}:
-			default:
-			}
-		}
-	}()
-	sub, ok, err := o.store.ClaimNextSubmission(ctx, time.Now().UTC(), o.leaseDuration, o.maxAttempts)
-	if err != nil || !ok {
-		return false
-	}
-	// Cascade wake signal so another idle worker immediately claims the next
-	// queued submission while this worker executes sub.
-	o.signalWake()
-	o.ExecuteClaimedSubmission(ctx, sub)
-	return true
 }
 
 // DrainUntilIdle claims and executes all claimable submissions and waits for
@@ -171,30 +154,5 @@ func (o *Orchestrator) ShutdownWithContext(ctx context.Context) {
 	case <-ctx.Done():
 		o.cancelWorker()
 		<-done
-	}
-}
-
-func (o *Orchestrator) signalWake() {
-	select {
-	case o.wakeCh <- struct{}{}:
-	default:
-	}
-}
-
-func (o *Orchestrator) workerLoop() {
-	defer o.wg.Done()
-	ticker := time.NewTicker(o.pollInterval)
-	defer ticker.Stop()
-	for {
-		for o.claimAndExecuteOne(o.workerCtx, true) {
-		}
-		select {
-		case <-o.stopCh:
-			return
-		case <-o.workerCtx.Done():
-			return
-		case <-o.wakeCh:
-		case <-ticker.C:
-		}
 	}
 }
