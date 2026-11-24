@@ -8,6 +8,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -18,7 +19,7 @@ import (
 
 // DefaultLeaseDuration is the time window a worker holds a claim on a
 // running submission before another worker (or a restarted gateway) can
-// automatically re-claim it.
+// automatically re-claim it if heartbeats stop.
 const DefaultLeaseDuration = 30 * time.Second
 
 // DefaultMaxAttempts is the maximum number of execution claims allowed for a
@@ -26,16 +27,23 @@ const DefaultLeaseDuration = 30 * time.Second
 // infinite crash loops).
 const DefaultMaxAttempts = 3
 
+// ErrStaleAttempt is returned when a worker attempts to renew a lease or write
+// results for a submission whose attempt counter has moved on (fencing token).
+var ErrStaleAttempt = errors.New("stale submission attempt fenced")
+
 // Store abstracts submission persistence and lease-based work claiming across
 // SQLite, PostgreSQL, and in-memory backends.
 type Store interface {
-	// PutSubmission inserts a new submission or transitions an existing one.
+	// PutSubmission inserts a new submission or transitions an existing one,
+	// verifying both state transition validity and the attempt fencing token.
 	PutSubmission(ctx context.Context, sub api.Submission) error
 	// ClaimNextSubmission atomically claims the next eligible submission whose
 	// status is "accepted" or "running" with an expired (or unset) lease.
-	// If the submission has already reached maxAttempts, it transitions the
-	// submission to terminal "failed" state and continues looking for work.
 	ClaimNextSubmission(ctx context.Context, now time.Time, leaseDuration time.Duration, maxAttempts int) (api.Submission, bool, error)
+	// RenewLease extends the lease_until timestamp for an in-flight "running"
+	// submission owned by the given attempt number. Returns ErrStaleAttempt if
+	// the submission is no longer in "running" state at that attempt.
+	RenewLease(ctx context.Context, id string, attempt int, now time.Time, leaseDuration time.Duration) error
 	// GetSubmission retrieves a submission by ID.
 	GetSubmission(ctx context.Context, id string) (api.Submission, bool, error)
 	// Ping verifies that the underlying storage backend is reachable.
@@ -62,7 +70,8 @@ type memoryEntry struct {
 	leaseUntil time.Time
 }
 
-// MemoryStore provides thread-safe in-memory storage with lease-based claiming.
+// MemoryStore provides thread-safe in-memory storage with lease-based claiming
+// and attempt fencing.
 type MemoryStore struct {
 	mu          sync.RWMutex
 	submissions map[string]memoryEntry
@@ -76,7 +85,7 @@ func NewMemoryStore() *MemoryStore {
 }
 
 // PutSubmission stores or updates a submission record in memory, enforcing the
-// submission state machine.
+// submission state machine and attempt fencing token.
 func (s *MemoryStore) PutSubmission(_ context.Context, sub api.Submission) error {
 	if !sub.Status.IsValid() {
 		return fmt.Errorf("invalid submission status %q", sub.Status)
@@ -87,6 +96,9 @@ func (s *MemoryStore) PutSubmission(_ context.Context, sub api.Submission) error
 	var from api.SubmissionStatus
 	if exists {
 		from = prev.sub.Status
+		if prev.sub.Attempts != sub.Attempts {
+			return fmt.Errorf("%w: submission %s is at attempt %d, got %d", ErrStaleAttempt, sub.ID, prev.sub.Attempts, sub.Attempts)
+		}
 	}
 	if !api.CanTransition(from, sub.Status) {
 		return fmt.Errorf("invalid submission state transition for %s: %q -> %q", sub.ID, from, sub.Status)
@@ -118,7 +130,6 @@ func (s *MemoryStore) ClaimNextSubmission(_ context.Context, now time.Time, leas
 			continue
 		}
 
-		// If maxAttempts is exhausted, fail closed instead of getting stuck.
 		if sub.Attempts >= maxAttempts {
 			reason := fmt.Sprintf("submission exceeded maximum execution attempts (%d)", maxAttempts)
 			if err := sub.TransitionTo(api.SubmissionFailed, reason, nowUTC); err != nil {
@@ -139,6 +150,19 @@ func (s *MemoryStore) ClaimNextSubmission(_ context.Context, now time.Time, leas
 		return sub, true, nil
 	}
 	return api.Submission{}, false, nil
+}
+
+// RenewLease extends the lease for an active attempt in memory.
+func (s *MemoryStore) RenewLease(_ context.Context, id string, attempt int, now time.Time, leaseDuration time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, exists := s.submissions[id]
+	if !exists || entry.sub.Status != api.SubmissionRunning || entry.sub.Attempts != attempt {
+		return fmt.Errorf("%w: cannot renew lease for %s at attempt %d", ErrStaleAttempt, id, attempt)
+	}
+	entry.leaseUntil = now.UTC().Add(leaseDuration)
+	s.submissions[id] = entry
+	return nil
 }
 
 // GetSubmission retrieves a submission by ID from memory.

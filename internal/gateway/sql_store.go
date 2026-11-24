@@ -36,8 +36,8 @@ CREATE INDEX IF NOT EXISTS idx_submissions_claimable ON submissions(status, leas
 `
 
 // SQLStore persists submissions in SQLite or PostgreSQL via database/sql and
-// implements lease-based work claiming so in-flight submissions automatically
-// recover across gateway restarts without a separate recovery service.
+// implements lease-based work claiming and attempt fencing so in-flight
+// submissions automatically recover across gateway restarts.
 type SQLStore struct {
 	db       *sql.DB
 	postgres bool
@@ -93,7 +93,8 @@ func OpenSQLStore(dsn string) (*SQLStore, error) {
 }
 
 // PutSubmission inserts a new submission or applies a validated state
-// transition inside a transaction, failing closed on illegal state transitions.
+// transition inside a transaction, failing closed on illegal state transitions
+// or stale attempt numbers (fencing token).
 func (s *SQLStore) PutSubmission(ctx context.Context, sub api.Submission) error {
 	if !sub.Status.IsValid() {
 		return fmt.Errorf("invalid submission status %q", sub.Status)
@@ -110,18 +111,23 @@ func (s *SQLStore) PutSubmission(ctx context.Context, sub api.Submission) error 
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	selectQuery := `SELECT status, lease_until FROM submissions WHERE id = ?`
+	selectQuery := `SELECT status, attempts, lease_until FROM submissions WHERE id = ?`
 	if s.postgres {
-		selectQuery = `SELECT status, lease_until FROM submissions WHERE id = $1 FOR UPDATE`
+		selectQuery = `SELECT status, attempts, lease_until FROM submissions WHERE id = $1 FOR UPDATE`
 	}
 
 	var (
 		currentStatusStr string
+		currentAttempts  int
 		leaseUntil       string
 	)
-	err = tx.QueryRowContext(ctx, selectQuery, sub.ID).Scan(&currentStatusStr, &leaseUntil)
+	err = tx.QueryRowContext(ctx, selectQuery, sub.ID).Scan(&currentStatusStr, &currentAttempts, &leaseUntil)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("check current status for %s: %w", sub.ID, err)
+	}
+
+	if err == nil && currentAttempts != sub.Attempts {
+		return fmt.Errorf("%w: submission %s is at attempt %d, got %d", ErrStaleAttempt, sub.ID, currentAttempts, sub.Attempts)
 	}
 
 	currentStatus := api.SubmissionStatus(currentStatusStr)

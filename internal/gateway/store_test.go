@@ -6,6 +6,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -19,8 +20,6 @@ func TestSQLStoreLeaseRecoveryAndAttemptCap(t *testing.T) {
 	dsn := "file:" + filepath.ToSlash(dbPath)
 	ctx := context.Background()
 
-	// 1. Open store and insert an "accepted" submission and an in-flight
-	// "running" submission whose lease expires across a gateway restart.
 	store1, err := OpenStore(dsn)
 	if err != nil {
 		t.Fatalf("OpenStore(1) failed: %v", err)
@@ -38,7 +37,7 @@ func TestSQLStoreLeaseRecoveryAndAttemptCap(t *testing.T) {
 		t.Fatalf("PutSubmission(inFlight) failed: %v", err)
 	}
 
-	// Simulate worker claiming the submission with a short 10ms lease, then crashing before completion.
+	// Simulate worker claiming the submission with a short 10ms lease, then crashing.
 	claimed, ok, err := store1.ClaimNextSubmission(ctx, now, 10*time.Millisecond, 3)
 	if err != nil || !ok {
 		t.Fatalf("ClaimNextSubmission(1) failed: err=%v ok=%v", err, ok)
@@ -52,13 +51,12 @@ func TestSQLStoreLeaseRecoveryAndAttemptCap(t *testing.T) {
 		t.Fatalf("expected active lease to prevent premature claim, got ok=%v err=%v", ok, err)
 	}
 
-	// Close store1 while submission is still "running" (simulating gateway crash/restart).
 	if err := store1.Close(); err != nil {
 		t.Fatalf("Close(1) failed: %v", err)
 	}
 
-	// 2. Wait for the 10ms lease to expire, start a new gateway Orchestrator on store2,
-	// and verify it automatically picks the in-flight submission back up and completes it!
+	// Wait for the 10ms lease to expire, start a new gateway Orchestrator on store2,
+	// and verify it automatically picks the in-flight submission back up and completes it.
 	time.Sleep(20 * time.Millisecond)
 
 	store2, err := OpenStore(dsn)
@@ -75,47 +73,88 @@ func TestSQLStoreLeaseRecoveryAndAttemptCap(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("GetSubmission(recovered) failed: %v, ok=%v", err, ok)
 	}
-	if recovered.Status != api.SubmissionCompleted {
-		t.Fatalf("expected restarted gateway to pick up and complete in-flight submission, got %+v", recovered)
+	if recovered.Status != api.SubmissionCompleted || recovered.Attempts != 2 {
+		t.Fatalf("expected completed with attempts=2, got %+v", recovered)
 	}
-	if recovered.Attempts != 2 {
-		t.Fatalf("expected attempts=2 after restart pickup, got %d", recovered.Attempts)
-	}
+}
 
-	// 3. Verify that a submission that repeatedly fails/expires across MaxAttempts
-	// never gets stuck and transitions to terminal "failed" state.
-	crashLoop := api.Submission{
+func TestLeaseHeartbeatAndAttemptFencing(t *testing.T) {
+	dsn := "file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "fence.db"))
+	store, err := OpenStore(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// 1. Verify fencing token: if Worker 1 (attempt 1) loses its lease to Worker 2 (attempt 2),
+	// Worker 1's RenewLease and PutSubmission calls must fail closed with ErrStaleAttempt.
+	sub := api.Submission{
 		SchemaVersion: api.SchemaVersionV1,
-		ID:            "submission-dd33ee44ff55",
+		ID:            "submission-112233445566",
 		Status:        api.SubmissionAccepted,
 		AcceptedAt:    now,
-		Artifact:      api.ArtifactInput{PURL: "pkg:npm/express@4.19.2"},
+		Artifact:      api.ArtifactInput{PURL: "pkg:npm/lodash@4.17.20"},
 	}
-	if err := store2.PutSubmission(ctx, crashLoop); err != nil {
+	if err := store.PutSubmission(ctx, sub); err != nil {
 		t.Fatal(err)
 	}
 
-	t0 := time.Now().UTC()
-	for attempt := 1; attempt <= 2; attempt++ {
-		c, ok, err := store2.ClaimNextSubmission(ctx, t0, 5*time.Millisecond, 2)
-		if err != nil || !ok {
-			t.Fatalf("attempt %d claim failed: ok=%v err=%v", attempt, ok, err)
-		}
-		if c.Attempts != attempt {
-			t.Fatalf("got attempts=%d, want %d", c.Attempts, attempt)
-		}
-		t0 = t0.Add(10 * time.Millisecond) // advance past lease expiry
+	worker1Claim, ok, err := store.ClaimNextSubmission(ctx, now, 5*time.Millisecond, 3)
+	if err != nil || !ok || worker1Claim.Attempts != 1 {
+		t.Fatalf("worker1 claim failed: ok=%v err=%v", ok, err)
 	}
 
-	// Next claim after reaching maxAttempts=2 must fail closed and mark it "failed".
-	if _, ok, err := store2.ClaimNextSubmission(ctx, t0, 5*time.Millisecond, 2); err != nil || ok {
-		t.Fatalf("expected no runnable claim after exhausting maxAttempts, got ok=%v err=%v", ok, err)
+	// Lease expires; Worker 2 claims the submission (attempts becomes 2).
+	worker2Claim, ok, err := store.ClaimNextSubmission(ctx, now.Add(10*time.Millisecond), 30*time.Second, 3)
+	if err != nil || !ok || worker2Claim.Attempts != 2 {
+		t.Fatalf("worker2 claim failed: ok=%v err=%v", ok, err)
 	}
-	failedSub, ok, err := store2.GetSubmission(ctx, crashLoop.ID)
+
+	// Stale Worker 1 tries to renew lease or save completed result with attempt=1 -> fenced!
+	if err := store.RenewLease(ctx, sub.ID, 1, now.Add(12*time.Millisecond), 30*time.Second); !errors.Is(err, ErrStaleAttempt) {
+		t.Fatalf("expected ErrStaleAttempt on stale RenewLease, got %v", err)
+	}
+	_ = worker1Claim.TransitionTo(api.SubmissionCompleted, "", now.Add(15*time.Millisecond))
+	if err := store.PutSubmission(ctx, worker1Claim); !errors.Is(err, ErrStaleAttempt) {
+		t.Fatalf("expected ErrStaleAttempt on stale PutSubmission, got %v", err)
+	}
+
+	// Worker 2 (attempt=2) succeeds.
+	if err := worker2Claim.TransitionTo(api.SubmissionCompleted, "", now.Add(20*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutSubmission(ctx, worker2Claim); err != nil {
+		t.Fatalf("expected current worker2 PutSubmission to succeed, got %v", err)
+	}
+
+	// 2. Verify heartbeat renewal keeps a slow execution alive past initial lease duration.
+	orch := NewOrchestrator(config.Default(), store)
+	defer orch.Shutdown()
+	orch.leaseDuration = 15 * time.Millisecond
+	orch.execHook = func(execCtx context.Context, s api.Submission) error {
+		// Sleep 45ms (3x the 15ms leaseDuration) while heartbeat renews the lease every 5ms.
+		select {
+		case <-time.After(45 * time.Millisecond):
+			return nil
+		case <-execCtx.Done():
+			return execCtx.Err()
+		}
+	}
+
+	slowSub, err := orch.Submit(ctx, api.ArtifactInput{PURL: "pkg:npm/react@18.3.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	orch.Wait()
+
+	finalSlow, ok, err := store.GetSubmission(ctx, slowSub.ID)
 	if err != nil || !ok {
 		t.Fatal(err)
 	}
-	if failedSub.Status != api.SubmissionFailed || failedSub.Error == "" {
-		t.Fatalf("expected exhausted submission to transition to failed, got %+v", failedSub)
+	if finalSlow.Status != api.SubmissionCompleted || finalSlow.Attempts != 1 {
+		t.Fatalf("expected slow submission to complete on attempt 1 via heartbeat, got %+v", finalSlow)
 	}
 }

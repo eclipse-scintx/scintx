@@ -6,6 +6,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -15,28 +16,25 @@ import (
 )
 
 // Orchestrator accepts validated artifact submissions and runs a lease-based
-// background worker loop that claims and completes pending or lease-expired
-// submissions from the persistent Store.
-//
-// Because work is claimed from the Store using time-bounded leases and an
-// attempt limit, gateway restarts automatically pick up in-flight submissions
-// and scans never get stuck—without needing a separate recovery service.
+// background worker loop that claims, heartbeats, and completes pending or
+// lease-expired submissions from the persistent Store.
 type Orchestrator struct {
 	cfg           *config.Config
 	store         Store
 	leaseDuration time.Duration
 	maxAttempts   int
 	pollInterval  time.Duration
+	execHook      func(ctx context.Context, sub api.Submission) error
 
 	wakeCh   chan struct{}
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
+	drainMu  sync.Mutex
 }
 
 // NewOrchestrator constructs a gateway orchestrator and starts its background
-// lease-claiming worker loop, which immediately picks up any pending or
-// lease-expired submissions already present in the Store.
+// lease-claiming worker loop.
 func NewOrchestrator(cfg *config.Config, store Store) *Orchestrator {
 	o := &Orchestrator{
 		cfg:           cfg,
@@ -81,6 +79,8 @@ func (o *Orchestrator) Submit(ctx context.Context, artifact api.ArtifactInput) (
 
 // DrainUntilIdle claims and executes all currently claimable submissions synchronously.
 func (o *Orchestrator) DrainUntilIdle(ctx context.Context) {
+	o.drainMu.Lock()
+	defer o.drainMu.Unlock()
 	for {
 		sub, ok, err := o.store.ClaimNextSubmission(ctx, time.Now().UTC(), o.leaseDuration, o.maxAttempts)
 		if err != nil || !ok {
@@ -90,7 +90,8 @@ func (o *Orchestrator) DrainUntilIdle(ctx context.Context) {
 	}
 }
 
-// Wait drains all currently claimable submissions until the queue is idle.
+// Wait drains all claimable submissions and waits for any in-flight worker
+// executions to complete.
 func (o *Orchestrator) Wait() {
 	o.DrainUntilIdle(context.Background())
 }
@@ -128,21 +129,74 @@ func (o *Orchestrator) workerLoop() {
 	}
 }
 
-// ExecuteClaimedSubmission finishes a submission that has already been claimed
-// into "running" state. If an unrecoverable panic occurs, it fails closed.
+// ExecuteClaimedSubmission runs a claimed submission while periodically
+// renewing its lease every leaseDuration/3. If another worker re-claims the
+// submission (fencing token mismatch), execCtx is canceled and the stale
+// worker aborts without overwriting the newer attempt.
 func (o *Orchestrator) ExecuteClaimedSubmission(ctx context.Context, sub api.Submission) {
+	execCtx, cancelExec := context.WithCancel(ctx)
+	stopHeartbeat := o.startLeaseHeartbeat(execCtx, cancelExec, sub)
+	defer stopHeartbeat()
+
 	defer func() {
 		if r := recover(); r != nil {
 			o.failSubmission(ctx, &sub, fmt.Sprintf("internal execution panic: %v", r))
 		}
 	}()
 
+	if o.execHook != nil {
+		if err := o.execHook(execCtx, sub); err != nil {
+			if errors.Is(err, ErrStaleAttempt) || execCtx.Err() != nil {
+				return
+			}
+			o.failSubmission(ctx, &sub, err.Error())
+			return
+		}
+	}
+	if execCtx.Err() != nil {
+		return
+	}
+
 	if err := sub.TransitionTo(api.SubmissionCompleted, "", time.Now().UTC()); err != nil {
 		o.failSubmission(ctx, &sub, err.Error())
 		return
 	}
-	if err := o.store.PutSubmission(ctx, sub); err != nil {
+	if err := o.store.PutSubmission(ctx, sub); err != nil && !errors.Is(err, ErrStaleAttempt) {
 		o.failSubmission(ctx, &sub, fmt.Sprintf("persist completed state: %v", err))
+	}
+}
+
+func (o *Orchestrator) startLeaseHeartbeat(execCtx context.Context, cancelExec context.CancelFunc, sub api.Submission) func() {
+	interval := o.leaseDuration / 3
+	if interval < time.Millisecond {
+		interval = time.Millisecond
+	}
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-execCtx.Done():
+				return
+			case <-ticker.C:
+				err := o.store.RenewLease(execCtx, sub.ID, sub.Attempts, time.Now().UTC(), o.leaseDuration)
+				if errors.Is(err, ErrStaleAttempt) {
+					cancelExec()
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		cancelExec()
+		wg.Wait()
 	}
 }
 

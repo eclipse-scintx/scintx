@@ -43,6 +43,35 @@ func (s *SQLStore) ClaimNextSubmission(ctx context.Context, now time.Time, lease
 	}
 }
 
+// RenewLease atomically extends lease_until for an active submission claim
+// only if the row is still in "running" state with the matching attempt number.
+func (s *SQLStore) RenewLease(ctx context.Context, id string, attempt int, now time.Time, leaseDuration time.Duration) error {
+	newLease := formatLeaseTime(now.UTC().Add(leaseDuration))
+	query := `
+UPDATE submissions
+SET lease_until = ?
+WHERE id = ? AND status = 'running' AND attempts = ?`
+	if s.postgres {
+		query = `
+UPDATE submissions
+SET lease_until = $1
+WHERE id = $2 AND status = 'running' AND attempts = $3`
+	}
+
+	res, err := s.db.ExecContext(ctx, query, newLease, id, attempt)
+	if err != nil {
+		return fmt.Errorf("renew lease for %s: %w", id, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("%w: cannot renew lease for %s at attempt %d", ErrStaleAttempt, id, attempt)
+	}
+	return nil
+}
+
 func (s *SQLStore) claimOneCandidate(ctx context.Context, nowUTC time.Time, nowStr, leaseStr string, maxAttempts int) (api.Submission, bool, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
