@@ -42,7 +42,7 @@ func TestValidateAndNormalizeArtifact(t *testing.T) {
 		t.Fatal("expected error for short sha256 digest")
 	}
 
-	// Raw content populates ContentMeta (and leaves Digest/PURL empty).
+	// Raw content populates ContentMeta, strips MediaType parameters, and releases Content slice.
 	contentBytes := []byte("hello world")
 	sum := sha256.Sum256(contentBytes)
 	expectedHex := hex.EncodeToString(sum[:])
@@ -50,7 +50,7 @@ func TestValidateAndNormalizeArtifact(t *testing.T) {
 	a, err = ValidateAndNormalizeArtifact(ArtifactInput{
 		Content:   contentBytes,
 		Filename:  "hello.txt",
-		MediaType: "text/plain",
+		MediaType: "Text/Plain; charset=utf-8",
 	}, 1024)
 	if err != nil {
 		t.Fatalf("unexpected error for content: %v", err)
@@ -58,8 +58,32 @@ func TestValidateAndNormalizeArtifact(t *testing.T) {
 	if a.ContentMeta == nil || a.ContentMeta.SizeBytes != 11 || a.ContentMeta.SHA256 != expectedHex {
 		t.Fatalf("expected populated ContentMeta, got %+v", a)
 	}
+	if a.ContentMeta.MediaType != "text/plain" {
+		t.Fatalf("expected canonical mediaType text/plain, got %q", a.ContentMeta.MediaType)
+	}
+	if a.Content != nil {
+		t.Fatal("expected raw Content byte slice to be cleared after hashing")
+	}
 	if a.PURL != "" || a.Digest != "" {
 		t.Fatalf("expected exclusive content artifact without purl/digest, got %+v", a)
+	}
+
+	// Malicious filename or mediaType must fail closed.
+	for _, badName := range []string{"../evil.tgz", "dir/evil.tgz", `dir\evil.tgz`, "evil\x00.tgz", "evil\r\n.tgz", "..", strings.Repeat("a", 256)} {
+		if _, err := ValidateAndNormalizeArtifact(ArtifactInput{
+			Content:  contentBytes,
+			Filename: badName,
+		}, 1024); err == nil {
+			t.Fatalf("expected filename %q to fail closed", badName)
+		}
+	}
+	for _, badMT := range []string{"not a mime type", "application/json\r\nX-Evil: 1", strings.Repeat("a", 130)} {
+		if _, err := ValidateAndNormalizeArtifact(ArtifactInput{
+			Content:   contentBytes,
+			MediaType: badMT,
+		}, 1024); err == nil {
+			t.Fatalf("expected mediaType %q to fail closed", badMT)
+		}
 	}
 
 	// Multiple artifact types must fail closed (exclusive artifact types only).

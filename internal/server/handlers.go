@@ -7,6 +7,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -116,6 +117,24 @@ func (s *Server) parseMultipartSubmission(w http.ResponseWriter, r *http.Request
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		return createSubmissionRequest{}, err
 	}
+	if r.MultipartForm != nil {
+		defer func() { _ = r.MultipartForm.RemoveAll() }()
+		// Fail closed on any unknown form field or file part name.
+		for k := range r.MultipartForm.Value {
+			if k != "purl" && k != "digest" {
+				return createSubmissionRequest{}, fmt.Errorf("unknown multipart form field %q", k)
+			}
+		}
+		for k, files := range r.MultipartForm.File {
+			if k != "content" {
+				return createSubmissionRequest{}, fmt.Errorf("unknown multipart file field %q", k)
+			}
+			if len(files) > 1 {
+				return createSubmissionRequest{}, errors.New("multiple content file parts are not permitted")
+			}
+		}
+	}
+
 	req := createSubmissionRequest{
 		Artifact: api.ArtifactInput{
 			PURL:   strings.TrimSpace(r.FormValue("purl")),
@@ -140,8 +159,13 @@ func (s *Server) parseMultipartSubmission(w http.ResponseWriter, r *http.Request
 }
 
 // handleGetSubmission handles GET /v1/submissions/{id}.
+// It validates the submission ID format before querying storage (fail-closed).
 func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if !api.IsValidSubmissionID(id) {
+		writeProblem(w, http.StatusBadRequest, "bad_request", "invalid submission id format")
+		return
+	}
 	sub, ok, err := s.store.GetSubmission(r.Context(), id)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, "storage_error", err.Error())

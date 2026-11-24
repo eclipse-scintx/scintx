@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"mime"
 	"strings"
 )
 
@@ -16,6 +17,12 @@ const SchemaVersionV1 = "1"
 
 // DefaultMaxContentBytes is the default 64 MiB limit for raw artifact uploads.
 const DefaultMaxContentBytes int64 = 64 * 1024 * 1024
+
+// MaxFilenameLength and MaxMediaTypeLength bound untrusted multipart headers.
+const (
+	MaxFilenameLength  = 255
+	MaxMediaTypeLength = 128
+)
 
 // ContentMetadata records metadata derived from raw artifact content bytes.
 type ContentMetadata struct {
@@ -38,7 +45,8 @@ type ArtifactInput struct {
 
 // ValidateAndNormalizeArtifact validates the submitted artifact fields and
 // enforces that exactly one artifact form (purl, digest, or content) is
-// supplied. It fails closed if zero or multiple artifact types are provided.
+// supplied. It fails closed if zero or multiple artifact types are provided,
+// or if any untrusted metadata field (filename, mediaType) is malformed.
 func ValidateAndNormalizeArtifact(in ArtifactInput, maxBytes int64) (ArtifactInput, error) {
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxContentBytes
@@ -65,6 +73,10 @@ func ValidateAndNormalizeArtifact(in ArtifactInput, maxBytes int64) (ArtifactInp
 		return ArtifactInput{}, fmt.Errorf("artifact requires exactly one of purl, digest, or content")
 	}
 
+	if len(out.Content) == 0 && (out.Filename != "" || out.MediaType != "") {
+		return ArtifactInput{}, fmt.Errorf("filename and mediaType are only permitted with content uploads")
+	}
+
 	if out.PURL != "" {
 		canonical, err := CanonicalPurl(out.PURL)
 		if err != nil {
@@ -83,17 +95,78 @@ func ValidateAndNormalizeArtifact(in ArtifactInput, maxBytes int64) (ArtifactInp
 		if int64(len(out.Content)) > maxBytes {
 			return ArtifactInput{}, fmt.Errorf("artifact content size %d exceeds maximum %d bytes", len(out.Content), maxBytes)
 		}
+		cleanFilename, err := ValidateFilename(out.Filename)
+		if err != nil {
+			return ArtifactInput{}, err
+		}
+		cleanMediaType, err := ValidateMediaType(out.MediaType)
+		if err != nil {
+			return ArtifactInput{}, err
+		}
+
 		sum256 := sha256.Sum256(out.Content)
 		hex256 := hex.EncodeToString(sum256[:])
+		sizeBytes := int64(len(out.Content))
+
+		// Release raw byte slice reference once metadata is computed so
+		// persisted/in-memory Submission records do not retain large blobs.
+		out.Content = nil
+		out.Filename = cleanFilename
+		out.MediaType = cleanMediaType
 		out.ContentMeta = &ContentMetadata{
 			SHA256:    hex256,
-			SizeBytes: int64(len(out.Content)),
-			Filename:  out.Filename,
-			MediaType: out.MediaType,
+			SizeBytes: sizeBytes,
+			Filename:  cleanFilename,
+			MediaType: cleanMediaType,
 		}
 	}
 
 	return out, nil
+}
+
+// ValidateFilename validates an untrusted multipart upload filename, rejecting
+// control characters, null bytes, path separators, traversal names, and
+// oversized strings (failing closed).
+func ValidateFilename(name string) (string, error) {
+	if name == "" {
+		return "", nil
+	}
+	if len(name) > MaxFilenameLength {
+		return "", fmt.Errorf("invalid filename: exceeds maximum length of %d bytes", MaxFilenameLength)
+	}
+	if name == "." || name == ".." {
+		return "", fmt.Errorf("invalid filename %q", name)
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c < 0x20 || c == 0x7f || c == '/' || c == '\\' {
+			return "", fmt.Errorf("invalid filename: contains forbidden character")
+		}
+	}
+	return name, nil
+}
+
+// ValidateMediaType validates and canonicalizes an untrusted multipart
+// Content-Type header value, failing closed on malformed MIME types or control
+// characters.
+func ValidateMediaType(mt string) (string, error) {
+	if mt == "" {
+		return "", nil
+	}
+	if len(mt) > MaxMediaTypeLength {
+		return "", fmt.Errorf("invalid mediaType: exceeds maximum length of %d bytes", MaxMediaTypeLength)
+	}
+	for i := 0; i < len(mt); i++ {
+		c := mt[i]
+		if c < 0x20 || c == 0x7f {
+			return "", fmt.Errorf("invalid mediaType: contains control character")
+		}
+	}
+	mediaType, _, err := mime.ParseMediaType(mt)
+	if err != nil || mediaType == "" {
+		return "", fmt.Errorf("invalid mediaType %q", mt)
+	}
+	return mediaType, nil
 }
 
 // ValidateDigest verifies that a digest string uses a supported algorithm

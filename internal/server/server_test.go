@@ -89,6 +89,22 @@ func TestSubmissionAndStatus(t *testing.T) {
 	if polled.Status != api.SubmissionCompleted {
 		t.Fatalf("expected completed status, got %q", polled.Status)
 	}
+
+	// 4. Malformed submission ID on GET fails closed (400 Bad Request) before DB query.
+	req = httptest.NewRequest(http.MethodGet, "/v1/submissions/not-a-valid-id", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid submission ID format, got %d", rec.Code)
+	}
+
+	// 5. Well-formed but non-existent submission ID returns 404 Not Found.
+	req = httptest.NewRequest(http.MethodGet, "/v1/submissions/submission-000000000000", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown submission ID, got %d", rec.Code)
+	}
 }
 
 func TestMultipartSubmission(t *testing.T) {
@@ -130,6 +146,20 @@ func TestMultipartSubmission(t *testing.T) {
 	handler.ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422 when both purl and content are supplied, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	// 3. Unknown multipart field fails closed (400 Bad Request).
+	var unknownBuf bytes.Buffer
+	mw3 := multipart.NewWriter(&unknownBuf)
+	_ = mw3.WriteField("unexpected", "value")
+	_ = mw3.Close()
+
+	req3 := httptest.NewRequest(http.MethodPost, "/v1/submissions", &unknownBuf)
+	req3.Header.Set("Content-Type", mw3.FormDataContentType())
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown multipart field, got %d: %s", rec3.Code, rec3.Body.String())
 	}
 
 	orch.Wait()
