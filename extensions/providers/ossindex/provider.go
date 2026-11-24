@@ -1,166 +1,123 @@
 // Copyright (c) 2026 Contributors to the Eclipse Foundation
 //
 // SPDX-License-Identifier: EPL-2.0
+
+// Package ossindex implements the SCINTX ProviderAdapter for Sonatype OSS Index
+// and the Sonatype Guide OSS Index Compatibility API (#43, #70, #73, #74).
 package ossindex
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/yeeth-security/scintx/api"
 )
 
-const (
-	providerID      = "ossindex"
-	providerVersion = "1.0.0"
-)
+const defaultBaseURL = "https://ossindex.sonatype.org"
 
-// Provider assesses artifacts via the Sonatype OSS Index HTTP API.
-type Provider struct {
-	client         *Client
-	ManifestDigest string
+var supportedPURLTypes = []string{
+	"npm", "pypi", "maven", "golang", "cargo", "gem",
+	"nuget", "composer", "cocoapods", "conan", "cran", "rpm", "swift",
+}
+
+// Config holds endpoint and authentication settings for the OSS Index adapter (#73).
+type Config struct {
+	BaseURL  string
+	Username string
+	Token    string
+}
+
+// Adapter implements api.ProviderAdapter for Sonatype OSS Index.
+type Adapter struct {
+	cfg        Config
+	httpClient *http.Client
 }
 
 func init() {
-	api.RegisterProviderFactory(providerID, func() (api.Provider, error) {
-		client := newClientFromEnv()
-		// Sonatype requires auth; skip at load so missing credentials do not
-		// produce N× provider_4xx results that escalate policy to review.
-		if client.Token == "" {
-			return nil, api.SkipProvider("ossindex skipped: run 'scintx auth ossindex' or set SCINTX_OSSINDEX_TOKEN for CI (https://guide.sonatype.com)")
-		}
-		p := &Provider{client: client}
-		p.ManifestDigest = p.computeDigest()
-		return p, nil
+	api.RegisterAdapterFactory("ossindex", func() (api.ProviderAdapter, error) {
+		return NewAdapterFromEnv(), nil
 	})
 }
 
-func (p *Provider) ID() string { return providerID }
+// NewAdapterFromEnv constructs an OSS Index Adapter from environment variables (#73).
+func NewAdapterFromEnv() *Adapter {
+	token := strings.TrimSpace(os.Getenv("SCINTX_OSSINDEX_TOKEN"))
+	if tokenFile := strings.TrimSpace(os.Getenv("SCINTX_OSSINDEX_TOKEN_FILE")); tokenFile != "" {
+		if data, err := os.ReadFile(tokenFile); err == nil {
+			token = strings.TrimSpace(string(data))
+		}
+	}
+	user := strings.TrimSpace(os.Getenv("SCINTX_OSSINDEX_USERNAME"))
+	if user == "" {
+		user = strings.TrimSpace(os.Getenv("SCINTX_OSSINDEX_USER"))
+	}
+	return NewAdapter(Config{
+		BaseURL:  strings.TrimSpace(os.Getenv("SCINTX_OSSINDEX_BASE_URL")),
+		Username: user,
+		Token:    token,
+	}, nil)
+}
 
-func (p *Provider) Capabilities() api.ProviderCapabilities {
-	caps := api.ProviderCapabilities{
-		SchemaVersion:   "1.0.0",
-		Provider:        api.ProviderRef{ID: providerID, Version: providerVersion},
-		ManifestVersion: "1",
-		UpdatedAt:       time.Now().UTC(),
+// NewAdapter creates an OSS Index Adapter with explicit configuration and HTTP client.
+func NewAdapter(cfg Config, httpClient *http.Client) *Adapter {
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = defaultBaseURL
+	}
+	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
+	return &Adapter{cfg: cfg, httpClient: httpClient}
+}
+
+// Descriptor declares the OSS Index adapter identity, supported PURL types, and capabilities (#70, #71).
+func (a *Adapter) Descriptor() api.AdapterDescriptor {
+	return api.AdapterDescriptor{
+		Slug:                   "ossindex",
+		AdapterVersion:         "1.0.0",
+		SupportedSchemaVersion: api.SchemaVersionV1,
+		SupportedInputs: api.SupportedInputs{
+			Types:      []api.ArtifactInputType{api.InputTypePURL},
+			Ecosystems: supportedPURLTypes,
+		},
 		Capabilities: []api.Capability{
-			{
-				ID:      "vulnerability",
-				Version: "v1",
-				InputProfiles: []api.InputProfile{
-					{
-						ID: "purl",
-						Requires: []api.Requirement{
-							// OSS Index accepts Package URLs for major ecosystems.
-							// Do NOT advertise vscode-extension: Sonatype does not
-							// catalog VS Code extensions. An empty report would be
-							// treated as clean and hide real OSV malware hits.
-							{Kind: api.ReqPurl, Types: []string{
-								"pypi", "npm", "maven", "golang", "cargo", "gem",
-								"nuget", "composer", "generic",
-							}},
-						},
-					},
-				},
-				FindingTypes:        []string{"vulnerability"},
-				NativeOutputFormats: []string{"ossindex"},
-			},
+			api.CapabilityVulnerabilities,
 		},
-		// Capability flag: may receive anonymous adjudication (decision + PURL)
-		// when listed in SCINTX_FORWARD_ADJUDICATIONS.
-		AcceptsAdjudications: true,
 	}
-	caps.ManifestDigest = p.computeDigest()
-	return caps
 }
 
-func (p *Provider) computeDigest() string {
-	b, _ := json.Marshal([]any{"ossindex", providerVersion, "vulnerability:v1"})
-	h := sha256.Sum256(b)
-	return "sha256:" + hex.EncodeToString(h[:])
-}
-
-// Assess queries OSS Index for the artifact PURL and returns mapped findings.
-func (p *Provider) Assess(ctx context.Context, artifact api.Artifact, capability api.Capability) (*api.ProviderResult, error) {
-	started := time.Now().UTC()
-	if p.client == nil {
-		p.client = newClientFromEnv()
-	}
-
-	if artifact.PURL == nil {
-		return errorResult(started, api.ErrNormalization, "no purl provided"), nil
-	}
-	canonical, err := api.CanonicalPurl(*artifact.PURL)
-	if err != nil {
-		return errorResult(started, api.ErrNormalization, "invalid purl: "+err.Error()), nil
-	}
-
-	report, raw, err := p.client.QueryByPURL(ctx, canonical)
-	if err != nil {
-		var he *httpError
-		if errors.As(err, &he) {
-			code := api.ErrProvider4xx
-			if he.Status >= 500 {
-				code = api.ErrProvider5xx
-			}
-			return errorResult(started, code, err.Error()), nil
+// CheckAvailability checks that OSS Index URL and required credentials are configured (#70, #73).
+// When SCINTX_OSSINDEX_TOKEN is unset, it returns StateUnconfigured and "missing_credentials"
+// so the gateway records why OSS Index was not executed in the Aggregate Report (#68, #73).
+func (a *Adapter) CheckAvailability(ctx context.Context) api.AvailabilityStatus {
+	now := time.Now().UTC()
+	u, err := url.Parse(a.cfg.BaseURL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return api.AvailabilityStatus{
+			State:     api.StateUnconfigured,
+			Available: false,
+			Reasons:   []string{"invalid_configuration"},
+			Message:   fmt.Sprintf("invalid OSS Index base URL %q", a.cfg.BaseURL),
+			CheckedAt: now,
 		}
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return errorResult(started, api.ErrTimeout, err.Error()), nil
+	}
+	if strings.TrimSpace(a.cfg.Token) == "" {
+		return api.AvailabilityStatus{
+			State:     api.StateUnconfigured,
+			Available: false,
+			Reasons:   []string{"missing_credentials"},
+			Message:   "SCINTX_OSSINDEX_TOKEN is required for Sonatype OSS Index",
+			CheckedAt: now,
 		}
-		return errorResult(started, api.ErrTransport, err.Error()), nil
 	}
-
-	findings := vulnsToFindings(canonical, report.Vulnerabilities)
-	verdict := verdictFromFindings(findings)
-	finished := time.Now().UTC()
-	rawDigest := sha256.Sum256(raw)
-
-	return &api.ProviderResult{
-		ID:                       "res_" + api.RandHex(),
-		SchemaVersion:            "1.0.0",
-		Provider:                 api.ProviderRef{ID: providerID, Version: providerVersion},
-		Capabilities:             []string{"vulnerability:v1"},
-		CapabilityManifestDigest: p.ManifestDigest,
-		Execution:                api.Execution{Status: api.ExecutionCompleted, StartedAt: started, FinishedAt: finished},
-		Verdict:                  verdict,
-		Findings:                 findings,
-		RawResult: &api.ResourceReference{
-			URI:       "urn:scintx:blob:ossindex_" + api.RandHex(),
-			MediaType: "application/json",
-			Digests:   map[string]string{"sha256": hex.EncodeToString(rawDigest[:])},
-			Format:    "ossindex",
-		},
-	}, nil
-}
-
-func errorResult(started time.Time, code api.ProviderErrorCode, msg string) *api.ProviderResult {
-	finished := time.Now().UTC()
-	return &api.ProviderResult{
-		ID:                       "res_" + api.RandHex(),
-		SchemaVersion:            "1.0.0",
-		Provider:                 api.ProviderRef{ID: providerID, Version: providerVersion},
-		Capabilities:             []string{"vulnerability:v1"},
-		CapabilityManifestDigest: "",
-		Execution: api.Execution{
-			Status:     api.ExecutionError,
-			StartedAt:  started,
-			FinishedAt: finished,
-			Error:      &api.ProviderError{Code: code, Message: msg},
-		},
+	return api.AvailabilityStatus{
+		State:     api.StateReady,
+		Available: true,
+		CheckedAt: now,
 	}
-}
-
-// ReceiveAdjudication accepts anonymous adjudication feedback (decision + PURL).
-// OSS Index / Guide has no public adjudication ingest yet; this acknowledges
-// the signal for capability/compliance and returns nil.
-func (p *Provider) ReceiveAdjudication(ctx context.Context, feedback api.AdjudicationFeedback) error {
-	_ = ctx
-	_ = p
-	_ = feedback
-	return nil
 }

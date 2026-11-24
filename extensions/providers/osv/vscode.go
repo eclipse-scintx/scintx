@@ -4,176 +4,149 @@
 package osv
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
-	"net/url"
 	"strings"
+
+	"github.com/yeeth-security/scintx/api"
 )
 
-// Default OSV VS Code registry ecosystems when the PURL has no repository_url.
-// OSV indexes extensions as ecosystem "VSCode:<registry-base>" + dotted
-// extension id ("publisher.name"), not as pkg:vscode-extension/… PURLs.
-var defaultVSCodeEcosystems = []string{
-	"VSCode:https://open-vsx.org",
-	"VSCode:https://marketplace.visualstudio.com",
-}
+// buildOSVResult converts OSV vulnerability records into a normalized SCINTX EvaluationResult (#70, #72).
+func buildOSVResult(
+	req api.EvaluationRequest,
+	vulns []osvVulnerability,
+	rawPages []json.RawMessage,
+) (*api.EvaluationResult, error) {
+	vulnFindings := make([]api.Finding, 0)
+	threatFindings := make([]api.Finding, 0)
 
-// vscodeEcosystemQuery is one OSV ecosystem+name(+version) lookup derived
-// from a vscode-extension PURL.
-type vscodeEcosystemQuery struct {
-	Ecosystem string
-	Name      string
-	Version   string
-}
-
-// vscodeExtensionQueries maps a canonical vscode-extension PURL to OSV
-// ecosystem queries.
-//
-// Example:
-//
-//	pkg:vscode-extension/checkmarx/ast-results@2.56.0?repository_url=https://open-vsx.org
-//	→ ecosystem=VSCode:https://open-vsx.org name=checkmarx.ast-results version=2.56.0
-//
-// Without repository_url, both Open VSX and the Microsoft Marketplace are
-// queried so a clean miss on one registry does not hide hits on the other.
-func vscodeExtensionQueries(canonicalPURL string) ([]vscodeEcosystemQuery, error) {
-	typ, ns, name, version, quals, err := splitVSCodePURL(canonicalPURL)
-	if err != nil {
-		return nil, err
-	}
-	if typ != "vscode-extension" {
-		return nil, fmt.Errorf("not a vscode-extension purl: %s", typ)
-	}
-	if ns == "" || name == "" {
-		return nil, fmt.Errorf("vscode-extension purl needs publisher/name: %s", canonicalPURL)
-	}
-	// OSV package name is the dotted VS Code extension id.
-	extID := ns + "." + name
-
-	repoURL := strings.TrimSpace(quals["repository_url"])
-	if repoURL != "" {
-		eco, err := vscodeEcosystemFromRepoURL(repoURL)
-		if err != nil {
-			return nil, err
-		}
-		return []vscodeEcosystemQuery{{Ecosystem: eco, Name: extID, Version: version}}, nil
-	}
-
-	out := make([]vscodeEcosystemQuery, 0, len(defaultVSCodeEcosystems))
-	for _, eco := range defaultVSCodeEcosystems {
-		out = append(out, vscodeEcosystemQuery{Ecosystem: eco, Name: extID, Version: version})
-	}
-	return out, nil
-}
-
-// vscodeEcosystemFromRepoURL builds "VSCode:<origin>" from a repository_url
-// qualifier. Trailing slashes are stripped so open-vsx.org/ matches OSV.
-func vscodeEcosystemFromRepoURL(raw string) (string, error) {
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return "", fmt.Errorf("invalid repository_url %q", raw)
-	}
-	base := strings.TrimRight(u.Scheme+"://"+u.Host+u.Path, "/")
-	return "VSCode:" + base, nil
-}
-
-// QueryVSCodeExtension runs ecosystem fallback queries and merges by vuln ID.
-func (c *Client) QueryVSCodeExtension(ctx context.Context, canonicalPURL string) ([]Vulnerability, []byte, error) {
-	queries, err := vscodeExtensionQueries(canonicalPURL)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	seen := map[string]struct{}{}
-	var merged []Vulnerability
-	var rawPages []json.RawMessage
-
-	for _, q := range queries {
-		vulns, raw, err := c.QueryByEcosystem(ctx, q.Ecosystem, q.Name, q.Version)
-		if err != nil {
-			return nil, nil, err
-		}
-		rawPages = append(rawPages, raw)
-		for _, v := range vulns {
-			if v.ID == "" {
-				merged = append(merged, v)
-				continue
+	for _, v := range vulns {
+		if v.ID == "" {
+			return nil, &api.AdapterError{
+				Code:      api.ErrMalformedResponse,
+				Message:   "OSV advisory record is missing required id field",
+				Retryable: false,
 			}
-			if _, ok := seen[v.ID]; ok {
-				continue
-			}
-			seen[v.ID] = struct{}{}
-			merged = append(merged, v)
+		}
+
+		isMalware := strings.HasPrefix(v.ID, "MAL-")
+		findingType := "vulnerability"
+		if isMalware {
+			findingType = "malware"
+		}
+
+		finding := api.Finding{
+			ID:          v.ID,
+			Type:        findingType,
+			Severity:    extractSeverity(v),
+			Title:       v.Summary,
+			Description: v.Details,
+			Artifact: &api.ArtifactInput{
+				PURL: req.Artifact.PURL,
+			},
+			Identifiers: append([]string{v.ID}, v.Aliases...),
+		}
+
+		if isMalware {
+			threatFindings = append(threatFindings, finding)
+		} else {
+			vulnFindings = append(vulnFindings, finding)
 		}
 	}
 
-	combined, _ := json.Marshal(map[string]any{
-		"fallback": "vscode-extension-ecosystem",
-		"queries":  queries,
-		"pages":    rawPages,
-		"count":    len(merged),
+	rawEvidence, _ := json.Marshal(map[string]any{
+		"pages": rawPages,
+		"count": len(vulns),
 	})
-	return merged, combined, nil
+
+	report := api.ProviderReport{
+		SchemaVersion:  api.SchemaVersionV1,
+		ProviderRunID:  req.ProviderRunID,
+		Provider:       "osv",
+		AdapterVersion: "1.0.0",
+		Capabilities: map[api.Capability]api.CapabilityReport{
+			api.CapabilityVulnerabilities: {
+				Status:   api.CapabilityStatusCompleted,
+				Checks:   []api.CheckResult{{ID: "known-vulnerabilities", Status: api.CapabilityStatusCompleted}},
+				Findings: vulnFindings,
+			},
+			api.CapabilityThreats: {
+				Status:   api.CapabilityStatusCompleted,
+				Checks:   []api.CheckResult{{ID: "malware", Status: api.CapabilityStatusCompleted}},
+				Findings: threatFindings,
+			},
+		},
+	}
+
+	return &api.EvaluationResult{
+		Report:      report,
+		RawEvidence: rawEvidence,
+	}, nil
 }
 
-// splitVSCodePURL is a small PURL splitter for the fields we need.
-// Kept local so the OSV adapter does not depend on unexported api.parsePurl.
-func splitVSCodePURL(purl string) (typ, namespace, name, version string, quals map[string]string, err error) {
-	quals = map[string]string{}
-	if !strings.HasPrefix(purl, "pkg:") {
-		return "", "", "", "", nil, fmt.Errorf("invalid purl: %s", purl)
+// extractSeverity maps OSV database_specific.severity or MAL-* advisories to SCINTX Severity.
+func extractSeverity(v osvVulnerability) api.Severity {
+	if strings.HasPrefix(v.ID, "MAL-") {
+		return api.SeverityCritical
 	}
-	rest := purl[4:]
+	if raw, ok := v.DatabaseSpecific["severity"].(string); ok {
+		switch strings.ToUpper(raw) {
+		case "CRITICAL":
+			return api.SeverityCritical
+		case "HIGH":
+			return api.SeverityHigh
+		case "MODERATE", "MEDIUM":
+			return api.SeverityMedium
+		case "LOW":
+			return api.SeverityLow
+		}
+	}
+	return api.SeverityUnknown
+}
 
-	// Separate qualifiers / subpath.
-	var tail string
+// parseVSCodeExtensionPURL extracts "<publisher>.<name>" and "<version>" from
+// "pkg:vscode-extension/<publisher>/<name>@<version>" (#43, #70).
+func parseVSCodeExtensionPURL(purl string) (extName, version string, ok bool) {
+	rest := strings.TrimPrefix(purl, "pkg:vscode-extension/")
 	if i := strings.IndexAny(rest, "?#"); i >= 0 {
-		tail = rest[i:]
 		rest = rest[:i]
 	}
-
-	// type/namespace/name@version  OR  type/name@version
-	slash := strings.Index(rest, "/")
-	if slash < 0 {
-		return "", "", "", "", nil, fmt.Errorf("invalid purl: %s", purl)
+	if at := strings.Index(rest, "@"); at >= 0 {
+		version = rest[at+1:]
+		rest = rest[:at]
 	}
-	typ = strings.ToLower(rest[:slash])
-	path := rest[slash+1:]
-
-	if at := strings.Index(path, "@"); at >= 0 {
-		version = path[at+1:]
-		path = path[:at]
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
 	}
+	return parts[0] + "." + parts[1], version, true
+}
 
-	if i := strings.Index(path, "/"); i >= 0 {
-		namespace = path[:i]
-		name = path[i+1:]
-	} else {
-		name = path
+// offlineFixtureForPURL returns deterministic OSV advisories when SCINTX_DEMO_FIXTURES=1 (#41).
+// This enables offline container and quickstart demonstrations without live network calls.
+func offlineFixtureForPURL(purl string) ([]osvVulnerability, []json.RawMessage) {
+	switch purl {
+	case "pkg:npm/lodash@4.17.20", "pkg:npm/example@1.2.3":
+		vulns := []osvVulnerability{{
+			ID:      "GHSA-35jh-r3h4-6jhm",
+			Summary: "Command Injection in lodash",
+			Details: "lodash versions prior to 4.17.21 are vulnerable to command injection.",
+			Aliases: []string{"CVE-2021-23337"},
+			DatabaseSpecific: map[string]any{
+				"severity": "CRITICAL",
+			},
+		}}
+		raw, _ := json.Marshal(osvQueryResponse{Vulns: vulns})
+		return vulns, []json.RawMessage{raw}
+	case "pkg:vscode-extension/evil-pub/malicious-ext@1.0.0":
+		vulns := []osvVulnerability{{
+			ID:      "MAL-2026-0001",
+			Summary: "Malicious VS Code extension exfiltrates credentials",
+			Details: "Extension contains known malware payload.",
+		}}
+		raw, _ := json.Marshal(osvQueryResponse{Vulns: vulns})
+		return vulns, []json.RawMessage{raw}
+	default:
+		raw := json.RawMessage(`{"vulns":[]}`)
+		return nil, []json.RawMessage{raw}
 	}
-
-	if len(tail) > 0 && tail[0] == '?' {
-		body := tail[1:]
-		if i := strings.Index(body, "#"); i >= 0 {
-			body = body[:i]
-		}
-		for _, kv := range strings.Split(body, "&") {
-			if kv == "" {
-				continue
-			}
-			eq := strings.Index(kv, "=")
-			if eq < 0 {
-				continue
-			}
-			// Qualifier keys are case-insensitive per PURL spec.
-			k := strings.ToLower(kv[:eq])
-			v, decErr := url.QueryUnescape(kv[eq+1:])
-			if decErr != nil {
-				v = kv[eq+1:]
-			}
-			quals[k] = v
-		}
-	}
-	return typ, namespace, name, version, quals, nil
 }

@@ -10,14 +10,18 @@ import (
 	"time"
 )
 
-// RandHex returns a random hex id fragment with a short time suffix.
-// Used for submission, result, decision, and event ids in the reference impl.
+// NewID generates a readable, unique identifier with the given prefix.
+// For example, NewID("submission") produces "submission-<hex>".
+func NewID(prefix string) string {
+	return prefix + "-" + RandHex()
+}
+
+// RandHex returns a random hex identifier fragment with a short timestamp suffix.
+// It falls back to the current clock if the cryptographic random reader fails.
 func RandHex() string {
-	b := make([]byte, 8)
-	// Best-effort entropy; fall back to zeros if the CSPRNG fails (rare).
+	b := make([]byte, 6)
 	if _, err := rand.Read(b); err != nil {
-		// Still produce a unique-enough id via wall clock so callers never panic.
-		return fmt.Sprintf("0000000000000000-%d", time.Now().UnixNano())
+		return fmt.Sprintf("000000000000-%d", time.Now().UnixNano())
 	}
-	return hex.EncodeToString(b) + fmt.Sprintf("-%d", time.Now().UnixNano()%100000)
+	return hex.EncodeToString(b)
 }

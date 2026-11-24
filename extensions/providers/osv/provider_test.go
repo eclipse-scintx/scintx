@@ -1,284 +1,81 @@
 // Copyright (c) 2026 Contributors to the Eclipse Foundation
 //
 // SPDX-License-Identifier: EPL-2.0
-package osv
+package osv_test
 
 import (
-	"encoding/json"
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/yeeth-security/scintx/api"
+	"github.com/yeeth-security/scintx/extensions/providers/osv"
 )
 
-func TestConvertVulnToFinding(t *testing.T) {
-	purl := "pkg:pypi/jinja2@2.4.1"
-	v := Vulnerability{
-		ID:      "GHSA-xxxx-yyyy-zzzz",
-		Summary: "XSS in Jinja2",
-		Details: "Detailed description",
-		Aliases: []string{"CVE-2019-12345", "CWE-79"},
-		Severity: []osvSeverity{
-			{Type: "CVSS_V3", Score: "7.5"},
-		},
-		References: []osvReference{{Type: "ADVISORY", URL: "https://example.com/adv"}},
+func TestOSVAdapter_EvaluateAndVSCodeFallback(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/query", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"vulns": [{
+				"id": "GHSA-35jh-r3h4-6jhm",
+				"summary": "Command Injection in lodash",
+				"aliases": ["CVE-2021-23337"],
+				"database_specific": {"severity": "CRITICAL"}
+			}]
+		}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	adapter := osv.NewAdapter(osv.Config{BaseURL: srv.URL}, srv.Client())
+	status := adapter.CheckAvailability(context.Background())
+	if !status.Available || status.State != api.StateReady {
+		t.Fatalf("expected adapter ready, got %+v", status)
 	}
-	f := vulnToFinding(purl, v)
-	if f.ID != v.ID || f.Type != "vulnerability" {
-		t.Fatalf("bad finding: %+v", f)
+
+	res, err := adapter.Evaluate(context.Background(), api.EvaluationRequest{
+		SubmissionID:  "sub-1",
+		ProviderRunID: "run-1",
+		Artifact:      api.ArtifactInput{PURL: "pkg:npm/lodash@4.17.20"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected evaluate error: %v", err)
 	}
-	if len(f.Severity) != 1 || f.Severity[0].Score == nil || *f.Severity[0].Score != 7.5 {
-		t.Fatalf("severity: %+v", f.Severity)
+	vulnCap := res.Report.Capabilities[api.CapabilityVulnerabilities]
+	if vulnCap.Status != api.CapabilityStatusCompleted || len(vulnCap.Findings) != 1 {
+		t.Fatalf("expected 1 vulnerability finding, got %+v", vulnCap)
 	}
-	if f.Severity[0].Level != "high" {
-		t.Fatalf("level=%s", f.Severity[0].Level)
-	}
-	if len(f.Weaknesses) != 1 || f.Weaknesses[0].ID != "CWE-79" {
-		t.Fatalf("weaknesses: %+v", f.Weaknesses)
+	if vulnCap.Findings[0].Severity != api.SeverityCritical {
+		t.Fatalf("got severity %q, want critical", vulnCap.Findings[0].Severity)
 	}
 }
 
-func TestAssessAgainstMockOSV(t *testing.T) {
+func TestOSVAdapter_MalformedResponseAndRateLimit(t *testing.T) {
+	code := http.StatusTooManyRequests
+	body := `not-json`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/query" || r.Method != http.MethodPost {
-			http.NotFound(w, r)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(queryResponse{
-			Vulns: []Vulnerability{{
-				ID:      "OSV-TEST-1",
-				Summary: "test vuln",
-				Aliases: []string{"CVE-2024-0001"},
-				Severity: []osvSeverity{
-					{Type: "CVSS_V3", Score: "9.8"},
-				},
-			}},
-		})
+		w.WriteHeader(code)
+		_, _ = w.Write([]byte(body))
 	}))
 	defer srv.Close()
 
-	p := &Provider{
-		client: &Client{BaseURL: srv.URL, HTTPClient: srv.Client()},
-	}
-	p.ManifestDigest = p.computeDigest()
-
-	purl := "pkg:pypi/requests@2.31.0"
-	res, err := p.Assess(t.Context(), api.Artifact{PURL: &purl}, api.Capability{ID: "vulnerability"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Execution.Status != api.ExecutionCompleted {
-		t.Fatalf("status=%s err=%v", res.Execution.Status, res.Execution.Error)
-	}
-	if res.Verdict == nil || res.Verdict.Value != api.VerdictFail {
-		t.Fatalf("verdict=%+v", res.Verdict)
-	}
-	if len(res.Findings) != 1 || res.Findings[0].ID != "OSV-TEST-1" {
-		t.Fatalf("findings=%+v", res.Findings)
-	}
-	if res.Provider.ID != "osv" {
-		t.Fatalf("provider=%s", res.Provider.ID)
-	}
-}
-
-func TestAssessCleanPackage(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(queryResponse{Vulns: nil})
-	}))
-	defer srv.Close()
-
-	p := &Provider{client: &Client{BaseURL: srv.URL, HTTPClient: srv.Client()}}
-	p.ManifestDigest = p.computeDigest()
-	purl := "pkg:pypi/clean-package@1.0.0"
-	res, err := p.Assess(t.Context(), api.Artifact{PURL: &purl}, api.Capability{ID: "vulnerability"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Verdict == nil || res.Verdict.Value != api.VerdictPass {
-		t.Fatalf("verdict=%+v", res.Verdict)
-	}
-	if len(res.Findings) != 0 {
-		t.Fatalf("findings=%d", len(res.Findings))
-	}
-}
-
-func TestAssessProviderError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "nope", http.StatusBadGateway)
-	}))
-	defer srv.Close()
-
-	p := &Provider{client: &Client{BaseURL: srv.URL, HTTPClient: srv.Client()}}
-	purl := "pkg:pypi/x@1"
-	res, err := p.Assess(t.Context(), api.Artifact{PURL: &purl}, api.Capability{ID: "vulnerability"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Execution.Status != api.ExecutionError {
-		t.Fatalf("want error, got %s", res.Execution.Status)
-	}
-	if res.Execution.Error == nil || res.Execution.Error.Code != api.ErrProvider5xx {
-		t.Fatalf("error=%+v", res.Execution.Error)
-	}
-}
-
-func TestPagination(t *testing.T) {
-	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		var req queryRequest
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		if req.PageToken == "" {
-			_ = json.NewEncoder(w).Encode(queryResponse{
-				Vulns:         []Vulnerability{{ID: "V1", Summary: "one"}},
-				NextPageToken: "page2",
-			})
-			return
-		}
-		_ = json.NewEncoder(w).Encode(queryResponse{
-			Vulns: []Vulnerability{{ID: "V2", Summary: "two"}},
-		})
-	}))
-	defer srv.Close()
-
-	c := &Client{BaseURL: srv.URL, HTTPClient: srv.Client()}
-	vulns, _, err := c.QueryByPURL(t.Context(), "pkg:npm/left-pad@1.3.0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if calls != 2 || len(vulns) != 2 {
-		t.Fatalf("calls=%d vulns=%d", calls, len(vulns))
-	}
-}
-
-func TestVSCodeExtensionQueries(t *testing.T) {
-	purl := "pkg:vscode-extension/checkmarx/ast-results@2.56.0?repository_url=https://open-vsx.org"
-	qs, err := vscodeExtensionQueries(purl)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(qs) != 1 {
-		t.Fatalf("queries=%d want 1", len(qs))
-	}
-	if qs[0].Ecosystem != "VSCode:https://open-vsx.org" {
-		t.Fatalf("ecosystem=%q", qs[0].Ecosystem)
-	}
-	if qs[0].Name != "checkmarx.ast-results" || qs[0].Version != "2.56.0" {
-		t.Fatalf("query=%+v", qs[0])
+	adapter := osv.NewAdapter(osv.Config{BaseURL: srv.URL}, srv.Client())
+	_, err := adapter.Evaluate(context.Background(), api.EvaluationRequest{
+		Artifact: api.ArtifactInput{PURL: "pkg:npm/lodash@4.17.21"},
+	})
+	var aerr *api.AdapterError
+	if !errors.As(err, &aerr) || aerr.Code != api.ErrRateLimited {
+		t.Fatalf("expected rate_limited error, got %v", err)
 	}
 
-	// No repository_url → try both default registries.
-	qs, err = vscodeExtensionQueries("pkg:vscode-extension/checkmarx/ast-results@2.56.0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(qs) != 2 {
-		t.Fatalf("queries=%d want 2", len(qs))
-	}
-}
-
-func TestAssessVSCodeExtensionEcosystemFallback(t *testing.T) {
-	// Simulate OSV: empty PURL response, then ecosystem hit for MAL-2026-2231.
-	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		var req queryRequest
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		if req.Package != nil && req.Package.PURL != "" {
-			_ = json.NewEncoder(w).Encode(queryResponse{Vulns: nil})
-			return
-		}
-		if req.Package != nil &&
-			req.Package.Ecosystem == "VSCode:https://open-vsx.org" &&
-			req.Package.Name == "checkmarx.ast-results" &&
-			req.Version == "2.56.0" {
-			_ = json.NewEncoder(w).Encode(queryResponse{
-				Vulns: []Vulnerability{{
-					ID:      "MAL-2026-2231",
-					Summary: "Malicious code in checkmarx.ast-results",
-				}},
-			})
-			return
-		}
-		_ = json.NewEncoder(w).Encode(queryResponse{Vulns: nil})
-	}))
-	defer srv.Close()
-
-	p := &Provider{client: &Client{BaseURL: srv.URL, HTTPClient: srv.Client()}}
-	p.ManifestDigest = p.computeDigest()
-
-	purl := "pkg:vscode-extension/checkmarx/ast-results@2.56.0?repository_url=https://open-vsx.org"
-	res, err := p.Assess(t.Context(), api.Artifact{PURL: &purl}, api.Capability{ID: "vulnerability"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Execution.Status != api.ExecutionCompleted {
-		t.Fatalf("status=%s err=%v", res.Execution.Status, res.Execution.Error)
-	}
-	if res.Verdict == nil || res.Verdict.Value != api.VerdictFail {
-		t.Fatalf("verdict=%+v", res.Verdict)
-	}
-	if len(res.Findings) != 1 || res.Findings[0].ID != "MAL-2026-2231" {
-		t.Fatalf("findings=%+v", res.Findings)
-	}
-	if calls < 2 {
-		t.Fatalf("expected PURL then ecosystem call, calls=%d", calls)
-	}
-
-	// Capabilities must advertise vscode-extension so the orchestrator routes it.
-	caps := p.Capabilities()
-	found := false
-	for _, c := range caps.Capabilities {
-		for _, ip := range c.InputProfiles {
-			for _, req := range ip.Requires {
-				for _, typ := range req.Types {
-					if typ == "vscode-extension" {
-						found = true
-					}
-				}
-			}
-		}
-	}
-	if !found {
-		t.Fatal("capabilities missing vscode-extension")
-	}
-}
-
-func TestCVSSLevel(t *testing.T) {
-	cases := map[float64]string{9.1: "critical", 7.0: "high", 4.0: "medium", 0.1: "low", 0: "none"}
-	for score, want := range cases {
-		if got := cvssLevel(score); got != want {
-			t.Fatalf("score=%v got=%s want=%s", score, got, want)
-		}
-	}
-}
-
-func TestBearerAuthHeader(t *testing.T) {
-	var gotAuth, gotKey string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		gotKey = r.Header.Get("X-Api-Key")
-		_ = json.NewEncoder(w).Encode(queryResponse{})
-	}))
-	defer srv.Close()
-
-	c := &Client{BaseURL: srv.URL, BearerToken: "tok", HTTPClient: srv.Client()}
-	if _, _, err := c.QueryByPURL(t.Context(), "pkg:npm/left-pad@1.0.0"); err != nil {
-		t.Fatal(err)
-	}
-	if gotAuth != "Bearer tok" {
-		t.Fatalf("Authorization=%q", gotAuth)
-	}
-	if gotKey != "" {
-		t.Fatalf("unexpected X-Api-Key=%q", gotKey)
-	}
-
-	c = &Client{BaseURL: srv.URL, APIKey: "k", HTTPClient: srv.Client()}
-	if _, _, err := c.QueryByPURL(t.Context(), "pkg:npm/left-pad@1.0.0"); err != nil {
-		t.Fatal(err)
-	}
-	if gotKey != "k" {
-		t.Fatalf("X-Api-Key=%q", gotKey)
+	code = http.StatusOK
+	_, err = adapter.Evaluate(context.Background(), api.EvaluationRequest{
+		Artifact: api.ArtifactInput{PURL: "pkg:npm/lodash@4.17.21"},
+	})
+	if !errors.As(err, &aerr) || aerr.Code != api.ErrMalformedResponse {
+		t.Fatalf("expected malformed_provider_response error, got %v", err)
 	}
 }

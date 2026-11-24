@@ -6,168 +6,94 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/yeeth-security/scintx/api"
-	_ "github.com/yeeth-security/scintx/extensions/policies/all"
 	_ "github.com/yeeth-security/scintx/extensions/providers/all"
-	"github.com/yeeth-security/scintx/internal/auth"
-	"github.com/yeeth-security/scintx/internal/cache"
-	"github.com/yeeth-security/scintx/internal/scintx"
+	"github.com/yeeth-security/scintx/internal/config"
+	"github.com/yeeth-security/scintx/internal/gateway"
+	"github.com/yeeth-security/scintx/internal/policy"
 	"github.com/yeeth-security/scintx/internal/server"
-	"github.com/yeeth-security/scintx/internal/store"
-	"github.com/yeeth-security/scintx/internal/webhook"
-	"github.com/yeeth-security/scintx/internal/workers"
 )
 
-// runServe starts the HTTP gateway (default when no subcommand is given).
-func runServe() {
+// runServe loads configuration, policies, and provider adapters, validates startup
+// requirements (#73), and runs the HTTP gateway until interrupted.
+func runServe() error {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
-	storeCfg := store.ConfigFromEnv()
-	st, err := store.Open(storeCfg)
+	cfg, err := config.Load("")
 	if err != nil {
-		slog.Error("failed to open store", "driver", storeCfg.Driver, "err", err)
-		os.Exit(1)
-	}
-	defer func() { _ = st.Close() }()
-	// Unset / memory = ephemeral forwarder: process submissions in-process;
-	// state is lost on restart. sqlite/postgres are durable stores.
-	if storeCfg.Driver == store.DriverMemory || storeCfg.Driver == "" {
-		slog.Info("store opened", "driver", "memory", "mode", "forwarder",
-			"note", "ephemeral; set SCINTX_STORE=sqlite|postgres for durable state")
-	} else {
-		slog.Info("store opened", "driver", storeCfg.Driver, "mode", "durable")
+		slog.Error("invalid gateway configuration", "err", err)
+		return err
 	}
 
-	emitter := scintx.NewEventEmitter("https://scintx.example", st)
-
-	webhookCfg, err := webhook.ConfigFromEnv()
+	policies, err := policy.LoadDir(cfg.Gateway.PoliciesDir)
 	if err != nil {
-		slog.Error("invalid webhook config", "err", err)
-		os.Exit(1)
+		slog.Error("failed to load policies", "dir", cfg.Gateway.PoliciesDir, "err", err)
+		return err
 	}
-	deliverer, err := webhook.Open(webhookCfg)
+	if _, ok := policies[cfg.Gateway.DefaultPolicy]; !ok {
+		err := fmt.Errorf("default policy %q not found in %q", cfg.Gateway.DefaultPolicy, cfg.Gateway.PoliciesDir)
+		slog.Error("missing default policy", "err", err)
+		return err
+	}
+
+	adapters, err := api.LoadAdapters()
 	if err != nil {
-		slog.Error("failed to open webhook deliverer", "err", err)
-		os.Exit(1)
-	}
-	if deliverer != nil {
-		emitter.Deliverer = deliverer
-		slog.Info("webhook delivery enabled", "url", webhookCfg.URL)
-		defer func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = deliverer.Close(ctx)
-		}()
-	} else {
-		slog.Info("webhook delivery disabled (set SCINTX_WEBHOOK_URL to enable)")
+		slog.Error("failed to load provider adapters", "err", err)
+		return err
 	}
 
-	// Load YAML policy engine (documents under SCINTX_POLICIES_DIR, default ./policies).
-	policyName := os.Getenv("SCINTX_POLICY_ENGINE")
-	if policyName == "" {
-		policyName = "yaml"
-	}
-	policy, err := api.LoadPolicyEngine(policyName)
-	if err != nil {
-		slog.Error("failed to load policy engine", "engine", policyName, "err", err)
-		os.Exit(1)
-	}
-	slog.Info("policy engine loaded", "engine", policy.ID())
-
-	cacheCfg, err := cache.ConfigFromEnv()
-	if err != nil {
-		slog.Error("invalid cache config", "err", err)
-		os.Exit(1)
-	}
-	resultCache, err := cache.Open(cacheCfg)
-	if err != nil {
-		slog.Error("failed to open cache", "backend", cacheCfg.Backend, "err", err)
-		os.Exit(1)
-	}
-	defer func() { _ = resultCache.Close() }()
-	slog.Info("cache opened", "backend", cacheCfg.Backend, "ttl", cache.DefaultTTL(cacheCfg).String())
-
-	orchOpts := []scintx.OrchestratorOption{
-		scintx.WithResultCache(resultCache, cache.DefaultTTL(cacheCfg)),
-		scintx.WithResultAggregator(scintx.NewDefaultAggregator()),
-	}
-	adjAllow := scintx.ParseAdjudicationForwardAllowlist()
-	orchOpts = append(orchOpts, scintx.WithAdjudicationForwarding(adjAllow))
-
-	// DefaultAggregator correlates findings across providers (same CVE → one MergedFinding).
-	orch := scintx.NewOrchestrator(st, policy, emitter, orchOpts...)
-	if err := orch.LoadProvidersFromRegistry(); err != nil {
-		slog.Error("failed to load providers", "err", err)
-		os.Exit(1)
-	}
-
-	slog.Info("SCINTX started", "providers", len(orch.Providers()))
-	for _, p := range orch.Providers() {
-		slog.Info("provider registered", "id", p.ID())
-	}
-	if len(adjAllow) > 0 {
-		ids := make([]string, 0, len(adjAllow))
-		for id := range adjAllow {
-			ids = append(ids, id)
+	// Validate required provider adapters at startup (#73).
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelStartup()
+	for _, a := range adapters {
+		desc := a.Descriptor()
+		st := a.CheckAvailability(startupCtx)
+		slog.Info("provider adapter registered",
+			"slug", desc.Slug,
+			"version", desc.AdapterVersion,
+			"state", st.State,
+			"available", st.Available,
+			"reasons", strings.Join(st.Reasons, ","),
+		)
+		if pcfg, ok := cfg.Providers[desc.Slug]; ok && pcfg.Enabled && pcfg.Required {
+			if desc.SupportedSchemaVersion != api.SchemaVersionV1 {
+				err := fmt.Errorf("required provider %q has incompatible schema version %q", desc.Slug, desc.SupportedSchemaVersion)
+				slog.Error("startup check failed", "err", err)
+				return err
+			}
+			if !st.Available {
+				err := fmt.Errorf("required provider %q is unavailable: %v", desc.Slug, st.Reasons)
+				slog.Error("startup check failed", "err", err)
+				return err
+			}
 		}
-		slog.Info("adjudication forwarding enabled", "providers", ids)
-	} else {
-		slog.Info("adjudication forwarding disabled (set SCINTX_FORWARD_ADJUDICATIONS to enable)")
 	}
 
-	// Build HTTP server first so the worker pool shares its cancellable root context.
-	srv := server.New(st, orch, emitter, nil)
+	store := gateway.NewStore()
+	orch := gateway.NewOrchestrator(cfg, store, policies, adapters)
+	srv := server.New(cfg, store, orch)
 
-	authCfg, err := auth.ConfigFromEnv()
-	if err != nil {
-		slog.Error("invalid auth config", "err", err)
-		os.Exit(1)
-	}
-	if v := auth.NewVerifier(authCfg); v != nil {
-		srv.SetAuth(v)
-		slog.Info("inbound auth enabled", "profiles", authCfg.Profiles)
-	} else {
-		slog.Info("inbound auth disabled (set SCINTX_AUTH=hmac and/or bearer to enable)")
-	}
-
-	workerCfg, err := workers.ConfigFromEnv()
-	if err != nil {
-		slog.Error("invalid worker config", "err", err)
-		os.Exit(1)
-	}
-	dispatcher, err := workers.Open(workerCfg, srv.RootContext(), orch.Process, st)
-	if err != nil {
-		slog.Error("failed to start worker pool", "err", err)
-		os.Exit(1)
-	}
-	srv.SetDispatcher(dispatcher)
-	slog.Info("worker pool ready",
-		"mode", workerCfg.Mode,
-		"workers", workerCfg.Workers,
-		"max_inflight", workerCfg.MaxInflight,
-		"lease", workerCfg.Lease.String(),
-	)
-
-	addr := os.Getenv("SCINTX_ADDR")
-	if addr == "" {
-		addr = ":8080"
-	}
-
-	// Graceful shutdown on SIGINT/SIGTERM: stop HTTP, cancel jobs, drain.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("SCINTX listening", "addr", addr)
-		errCh <- srv.Start(addr)
+		slog.Info("SCINTX gateway listening",
+			"addr", cfg.Gateway.Addr,
+			"instanceId", cfg.Gateway.InstanceID,
+			"defaultPolicy", cfg.Gateway.DefaultPolicy,
+			"configRevision", cfg.Revision,
+		)
+		errCh <- srv.Start(cfg.Gateway.Addr)
 	}()
 
 	select {
@@ -175,23 +101,12 @@ func runServe() {
 		slog.Info("shutdown signal received")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			slog.Error("shutdown error", "err", err)
-		}
-		// Do not Close store/cache while workers may still write.
-		if !srv.WorkersDrained() {
-			slog.Warn("workers still draining; waiting extra before closing store")
-			extra, cancelExtra := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancelExtra()
-			if err := srv.WaitWorkers(extra); err != nil {
-				slog.Error("workers did not finish; store close may race", "err", err)
-				os.Exit(1)
-			}
-		}
+		return srv.Shutdown(shutdownCtx)
 	case err := <-errCh:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("server stopped", "err", err)
-			os.Exit(1)
+			slog.Error("server stopped with error", "err", err)
+			return err
 		}
+		return nil
 	}
 }

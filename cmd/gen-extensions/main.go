@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Contributors to the Eclipse Foundation
 //
 // SPDX-License-Identifier: EPL-2.0
-// Command gen-extensions scans the extensions/ directory and regenerates
-// the all.go aggregation files that import every extension package,
+
+// Command gen-extensions scans the extensions/providers directory and regenerates
+// the all.go aggregation file that imports every provider adapter extension package,
 // triggering their init() registration.
 //
 // Usage:
@@ -35,19 +36,11 @@ var kinds = []extensionKind{
 		dir:         "extensions/providers",
 		importRoot:  "github.com/yeeth-security/scintx/extensions/providers",
 		packageName: "providersall",
-		description: "all provider extensions",
-	},
-	{
-		dir:         "extensions/policies",
-		importRoot:  "github.com/yeeth-security/scintx/extensions/policies",
-		packageName: "policiesall",
-		description: "all policy engine extensions",
+		description: "all provider adapter extensions",
 	},
 }
 
 func main() {
-	// go:generate runs from the package directory. We walk up to find
-	// go.mod so the generator works regardless of where it's invoked.
 	cwd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gen-extensions: getwd: %v\n", err)
@@ -89,7 +82,6 @@ func generate(k extensionKind) error {
 		return fmt.Errorf("directory does not exist: %s", k.dir)
 	}
 
-	// Relative dir for comments (always slash-separated for stable, portable docs).
 	relDir, _ := filepath.Rel(repoRoot, k.dir)
 	if relDir == "" {
 		relDir = k.dir
@@ -101,14 +93,9 @@ func generate(k extensionKind) error {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() || path == k.dir {
+		if !d.IsDir() || path == k.dir || d.Name() == "all" {
 			return nil
 		}
-		// Skip the "all" aggregation directory itself
-		if d.Name() == "all" {
-			return nil
-		}
-		// Skip .gitkeep-only directories
 		entries, err := os.ReadDir(path)
 		if err != nil {
 			return err

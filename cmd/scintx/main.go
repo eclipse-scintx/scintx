@@ -11,30 +11,35 @@ import (
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
-		runServe()
+		if err := runServe(); err != nil {
+			os.Exit(1)
+		}
 		return
 	}
 	switch args[0] {
 	case "serve":
-		runServe()
-	case "auth":
-		os.Exit(runAuth(args[1:]))
+		if err := runServe(); err != nil {
+			os.Exit(1)
+		}
+	case "health":
+		if err := runHealth(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "health probe failed: %v\n", err)
+			os.Exit(1)
+		}
 	case "help", "-h", "--help":
-		printRootUsage()
+		printUsage()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", args[0])
-		printRootUsage()
+		printUsage()
 		os.Exit(2)
 	}
 }
 
-func printRootUsage() {
+func printUsage() {
 	fmt.Fprintf(os.Stderr, `Usage:
-  scintx              Start the HTTP gateway (same as: scintx serve)
-  scintx serve        Start the HTTP gateway
-  scintx auth …       Manage outbound provider credentials
+  scintx              Start the SCINTX HTTP gateway (same as: scintx serve)
+  scintx serve        Start the SCINTX HTTP gateway
+  scintx health       Probe gateway readiness (/readyz) for container healthchecks
   scintx help         Show this help
-
-Run "scintx auth help" for credential commands.
 `)
 }

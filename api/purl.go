@@ -4,7 +4,11 @@
 package api
 
 import (
+	"archive/zip"
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"sort"
 	"strings"
@@ -36,86 +40,46 @@ func parsePurl(purl string) (*parsedPurl, error) {
 	tail := m[3]
 
 	p := &parsedPurl{Type: typ, Qualifiers: map[string]string{}}
-
 	if len(rest) > 0 {
 		body := rest[1:]
-		slashIdx := strings.Index(body, "/")
-		if slashIdx >= 0 {
+		if slashIdx := strings.Index(body, "/"); slashIdx >= 0 {
 			p.Namespace = body[:slashIdx]
 			p.Name = body[slashIdx+1:]
 		} else {
 			p.Name = body
 		}
 	}
-
-	if v, ok := extractVersion(p.Name); ok {
-		p.Version = v
+	if idx := strings.Index(p.Name, "@"); idx >= 0 {
+		p.Version = p.Name[idx+1:]
+		p.Name = p.Name[:idx]
 	}
-	p.Name = stripVersion(p.Name)
+	if p.Name == "" {
+		return nil, fmt.Errorf("invalid purl: missing package name in %s", purl)
+	}
 
-	if len(tail) > 0 {
-		if tail[0] == '?' {
-			body := tail[1:]
-			var hashSub string
-			if idx := strings.Index(body, "#"); idx >= 0 {
-				hashSub = body[idx+1:]
-				body = body[:idx]
-			}
-			for _, kv := range strings.Split(body, "&") {
-				if kv == "" {
-					continue
-				}
-				eq := strings.Index(kv, "=")
-				if eq < 0 {
-					continue
-				}
+	if len(tail) > 0 && tail[0] == '?' {
+		body := tail[1:]
+		if idx := strings.Index(body, "#"); idx >= 0 {
+			p.Hash = body[idx+1:]
+			body = body[:idx]
+		}
+		for _, kv := range strings.Split(body, "&") {
+			if eq := strings.Index(kv, "="); eq > 0 {
 				p.Qualifiers[strings.ToLower(kv[:eq])] = kv[eq+1:]
 			}
-			if hashSub != "" {
-				slashIdx := strings.Index(hashSub, "/")
-				if slashIdx >= 0 {
-					p.Hash = hashSub[:slashIdx]
-					p.Subpath = hashSub[slashIdx:]
-				} else {
-					p.Hash = hashSub
-				}
-			}
-		} else if tail[0] == '#' {
-			body := tail[1:]
-			slashIdx := strings.Index(body, "/")
-			if slashIdx >= 0 {
-				p.Hash = body[:slashIdx]
-				p.Subpath = body[slashIdx:]
-			} else {
-				p.Hash = body
-			}
 		}
+	} else if len(tail) > 0 && tail[0] == '#' {
+		p.Hash = tail[1:]
 	}
 
 	if namespaceLowerTypes[typ] {
 		p.Namespace = strings.ToLower(p.Namespace)
 		p.Name = strings.ToLower(p.Name)
 	}
-	p.Subpath = strings.TrimRight(p.Subpath, "/")
 	return p, nil
 }
 
-func extractVersion(s string) (string, bool) {
-	idx := strings.Index(s, "@")
-	if idx < 0 {
-		return "", false
-	}
-	return s[idx+1:], true
-}
-
-func stripVersion(s string) string {
-	idx := strings.Index(s, "@")
-	if idx < 0 {
-		return s
-	}
-	return s[:idx]
-}
-
+// CanonicalPurl validates and normalizes a Package URL string.
 func CanonicalPurl(purl string) (string, error) {
 	p, err := parsePurl(purl)
 	if err != nil {
@@ -136,7 +100,7 @@ func CanonicalPurl(purl string) (string, error) {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		var qs []string
+		qs := make([]string, 0, len(keys))
 		for _, k := range keys {
 			qs = append(qs, fmt.Sprintf("%s=%s", k, p.Qualifiers[k]))
 		}
@@ -145,12 +109,10 @@ func CanonicalPurl(purl string) (string, error) {
 	if p.Hash != "" {
 		fmt.Fprintf(&b, "#%s", p.Hash)
 	}
-	if p.Subpath != "" {
-		fmt.Fprintf(&b, "%s", p.Subpath)
-	}
 	return b.String(), nil
 }
 
+// PurlType returns the lowercase ecosystem type of a Package URL.
 func PurlType(purl string) (string, error) {
 	p, err := parsePurl(purl)
 	if err != nil {
@@ -159,21 +121,50 @@ func PurlType(purl string) (string, error) {
 	return p.Type, nil
 }
 
-func PurlName(purl string) (string, error) {
-	p, err := parsePurl(purl)
-	if err != nil {
-		return "", err
-	}
-	return p.Name, nil
-}
-
+// PurlVersion returns the version component of a Package URL and whether it is present.
 func PurlVersion(purl string) (string, bool, error) {
 	p, err := parsePurl(purl)
 	if err != nil {
 		return "", false, err
 	}
-	if p.Version == "" {
-		return "", false, nil
+	return p.Version, p.Version != "", nil
+}
+
+// extractVSIXPURL inspects a ZIP/VSIX archive for extension/package.json and builds
+// a pkg:vscode-extension/<publisher>/<name>@<version> PURL when present (#67).
+func extractVSIXPURL(content []byte) string {
+	zr, err := zip.NewReader(bytes.NewReader(content), int64(len(content)))
+	if err != nil {
+		return ""
 	}
-	return p.Version, true, nil
+	for _, f := range zr.File {
+		if f.Name != "extension/package.json" && f.Name != "package.json" {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return ""
+		}
+		data, err := io.ReadAll(io.LimitReader(rc, 1<<20))
+		_ = rc.Close()
+		if err != nil {
+			return ""
+		}
+		var manifest struct {
+			Publisher string `json:"publisher"`
+			Name      string `json:"name"`
+			Version   string `json:"version"`
+		}
+		if err := json.Unmarshal(data, &manifest); err != nil || manifest.Name == "" || manifest.Publisher == "" {
+			return ""
+		}
+		raw := fmt.Sprintf("pkg:vscode-extension/%s/%s", manifest.Publisher, manifest.Name)
+		if manifest.Version != "" {
+			raw += "@" + manifest.Version
+		}
+		if cp, err := CanonicalPurl(raw); err == nil {
+			return cp
+		}
+	}
+	return ""
 }

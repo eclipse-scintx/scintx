@@ -4,154 +4,63 @@
 package api
 
 import (
-	"errors"
 	"fmt"
-	"log/slog"
-	"os"
-	"strings"
+	"sort"
 	"sync"
 )
 
-// ErrProviderSkipped means a registered factory chose not to load (missing
-// credentials, disabled feature, etc.). LoadProviders treats this as a warning
-// and continues with the remaining providers.
-var ErrProviderSkipped = errors.New("provider skipped")
-
-type skipProviderError struct {
-	reason string
-}
-
-func (e *skipProviderError) Error() string { return e.reason }
-func (e *skipProviderError) Unwrap() error { return ErrProviderSkipped }
-
-// SkipProvider returns an ErrProviderSkipped with a clear, user-facing reason.
-// The reason is logged as-is (no extra prefix).
-// Example: SkipProvider("ossindex skipped: run 'scintx auth ossindex' (...)")
-func SkipProvider(reason string) error {
-	if reason == "" {
-		return ErrProviderSkipped
-	}
-	return &skipProviderError{reason: reason}
-}
-
-// --- Provider registry ---
-
-// ProviderFactory constructs a Provider. Called once at process startup.
-type ProviderFactory func() (Provider, error)
+// AdapterFactory constructs a ProviderAdapter instance at gateway startup.
+type AdapterFactory func() (ProviderAdapter, error)
 
 var (
-	providerFactoriesMu sync.RWMutex
-	providerFactories   = map[string]ProviderFactory{}
+	adapterFactoriesMu sync.RWMutex
+	adapterFactories   = map[string]AdapterFactory{}
 )
 
-// RegisterProviderFactory registers a provider under id.
-// Called from init() in extension packages. Panics on duplicate IDs.
-func RegisterProviderFactory(id string, factory ProviderFactory) {
-	providerFactoriesMu.Lock()
-	defer providerFactoriesMu.Unlock()
-	if _, exists := providerFactories[id]; exists {
-		panic(fmt.Sprintf("provider factory already registered: %s", id))
+// RegisterAdapterFactory registers a ProviderAdapter constructor under its slug.
+// Extension packages call this from init() so the gateway can discover compiled-in adapters.
+func RegisterAdapterFactory(slug string, factory AdapterFactory) {
+	adapterFactoriesMu.Lock()
+	defer adapterFactoriesMu.Unlock()
+	if _, exists := adapterFactories[slug]; exists {
+		panic(fmt.Sprintf("provider adapter factory already registered: %s", slug))
 	}
-	providerFactories[id] = factory
+	adapterFactories[slug] = factory
 }
 
-// LoadProviders instantiates registered providers.
-// Iteration order is sorted by ID for deterministic startup.
-//
-// When SCINTX_PROVIDERS is set (comma-separated IDs), only those factories
-// are loaded. Empty / unset loads every registered provider.
-//
-// Factories that return ErrProviderSkipped are logged and omitted so a missing
-// optional credential does not fail the whole process.
-func LoadProviders() ([]Provider, error) {
-	allow := providerAllowlist()
-	providerFactoriesMu.RLock()
-	defer providerFactoriesMu.RUnlock()
-	ids := sortedKeys(providerFactories)
-	providers := make([]Provider, 0, len(ids))
-	for _, id := range ids {
-		if allow != nil {
-			if _, ok := allow[id]; !ok {
-				continue
-			}
-		}
-		p, err := providerFactories[id]()
+// LoadAdapters instantiates all registered ProviderAdapter implementations in sorted slug order.
+// Unlike the legacy architecture, adapters without credentials are still instantiated and
+// registered so their CheckAvailability status ("missing_credentials") is recorded in the
+// Aggregate Report (#68, #71, #73).
+func LoadAdapters() ([]ProviderAdapter, error) {
+	adapterFactoriesMu.RLock()
+	defer adapterFactoriesMu.RUnlock()
+
+	slugs := make([]string, 0, len(adapterFactories))
+	for slug := range adapterFactories {
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+
+	adapters := make([]ProviderAdapter, 0, len(slugs))
+	for _, slug := range slugs {
+		a, err := adapterFactories[slug]()
 		if err != nil {
-			if errors.Is(err, ErrProviderSkipped) {
-				// Prefer the factory's full reason (includes setup URL / env var).
-				slog.Warn(err.Error())
-				continue
-			}
-			return nil, fmt.Errorf("provider factory %q: %w", id, err)
+			return nil, fmt.Errorf("adapter factory %q: %w", slug, err)
 		}
-		providers = append(providers, p)
+		adapters = append(adapters, a)
 	}
-	if allow != nil && len(providers) == 0 {
-		return nil, fmt.Errorf("SCINTX_PROVIDERS matched no registered providers")
-	}
-	return providers, nil
+	return adapters, nil
 }
 
-// providerAllowlist returns nil when every registered provider should load.
-func providerAllowlist() map[string]struct{} {
-	raw := strings.TrimSpace(os.Getenv("SCINTX_PROVIDERS"))
-	if raw == "" {
-		return nil
+// RegisteredAdapterSlugs returns all registered adapter slugs in sorted order.
+func RegisteredAdapterSlugs() []string {
+	adapterFactoriesMu.RLock()
+	defer adapterFactoriesMu.RUnlock()
+	slugs := make([]string, 0, len(adapterFactories))
+	for slug := range adapterFactories {
+		slugs = append(slugs, slug)
 	}
-	out := make(map[string]struct{})
-	for _, part := range strings.Split(raw, ",") {
-		id := strings.TrimSpace(part)
-		if id != "" {
-			out[id] = struct{}{}
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// RegisteredProviderIDs returns registered provider IDs in sorted order.
-func RegisteredProviderIDs() []string {
-	providerFactoriesMu.RLock()
-	defer providerFactoriesMu.RUnlock()
-	return sortedKeys(providerFactories)
-}
-
-// --- PolicyEngine registry ---
-
-// PolicyEngineFactory constructs a PolicyEngine.
-type PolicyEngineFactory func() (PolicyEngine, error)
-
-var (
-	policyFactoriesMu sync.RWMutex
-	policyFactories   = map[string]PolicyEngineFactory{}
-)
-
-// RegisterPolicyEngineFactory registers a policy engine under id.
-func RegisterPolicyEngineFactory(id string, factory PolicyEngineFactory) {
-	policyFactoriesMu.Lock()
-	defer policyFactoriesMu.Unlock()
-	if _, exists := policyFactories[id]; exists {
-		panic(fmt.Sprintf("policy engine factory already registered: %s", id))
-	}
-	policyFactories[id] = factory
-}
-
-// LoadPolicyEngine instantiates the policy engine registered under id.
-func LoadPolicyEngine(id string) (PolicyEngine, error) {
-	policyFactoriesMu.RLock()
-	defer policyFactoriesMu.RUnlock()
-	f, ok := policyFactories[id]
-	if !ok {
-		return nil, fmt.Errorf("policy engine not registered: %s", id)
-	}
-	return f()
-}
-
-// RegisteredPolicyEngineIDs returns registered policy engine IDs in sorted order.
-func RegisteredPolicyEngineIDs() []string {
-	policyFactoriesMu.RLock()
-	defer policyFactoriesMu.RUnlock()
-	return sortedKeys(policyFactories)
+	sort.Strings(slugs)
+	return slugs
 }

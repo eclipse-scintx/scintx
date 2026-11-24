@@ -1,178 +1,213 @@
 // Copyright (c) 2026 Contributors to the Eclipse Foundation
 //
 // SPDX-License-Identifier: EPL-2.0
-// Package osv is a real OSV.dev vulnerability provider.
-//
-// It queries https://api.osv.dev (override with SCINTX_OSV_BASE_URL) using a
-// versioned PURL and maps OSV records to SCINTX Findings.
+
+// Package osv implements the SCINTX ProviderAdapter for OSV.dev (#70, #71, #74).
+// It queries POST /v1/query by PURL, falls back to "VSCode:https://open-vsx.org"
+// for Open VSX extensions, and maps advisories into vulnerabilities and threats.
 package osv
 
 import (
+	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/yeeth-security/scintx/api"
 )
 
-const (
-	providerID      = "osv"
-	providerVersion = "1.0.0"
-)
+const defaultBaseURL = "https://api.osv.dev"
 
-// Provider assesses artifacts via the OSV HTTP API.
-type Provider struct {
-	client         *Client
-	ManifestDigest string
+var supportedPURLTypes = []string{
+	"npm", "pypi", "maven", "golang", "cargo", "gem",
+	"nuget", "composer", "hex", "pub", "swift", "cran",
+	"bioconductor", "hackage", "conan", "debian", "alpine",
+	"ubuntu", "rocky", "almalinux", "vscode-extension",
+}
+
+// Config holds endpoint and optional authentication settings for the OSV adapter (#70, #73).
+type Config struct {
+	BaseURL     string
+	RequireAuth bool
+	BearerToken string
+	OfflineDemo bool
+}
+
+// Adapter implements api.ProviderAdapter for the OSV.dev HTTP API.
+type Adapter struct {
+	cfg        Config
+	httpClient *http.Client
 }
 
 func init() {
-	api.RegisterProviderFactory(providerID, func() (api.Provider, error) {
-		p := &Provider{client: newClientFromEnv()}
-		p.ManifestDigest = p.computeDigest()
-		return p, nil
+	api.RegisterAdapterFactory("osv", func() (api.ProviderAdapter, error) {
+		return NewAdapterFromEnv(), nil
 	})
 }
 
-func (p *Provider) ID() string { return providerID }
+// NewAdapterFromEnv constructs an OSV Adapter using environment variables (#73).
+func NewAdapterFromEnv() *Adapter {
+	return NewAdapter(Config{
+		BaseURL:     strings.TrimSpace(os.Getenv("SCINTX_OSV_BASE_URL")),
+		BearerToken: strings.TrimSpace(os.Getenv("SCINTX_OSV_BEARER_TOKEN")),
+		OfflineDemo: strings.TrimSpace(os.Getenv("SCINTX_DEMO_FIXTURES")) == "1",
+	}, nil)
+}
 
-func (p *Provider) Capabilities() api.ProviderCapabilities {
-	caps := api.ProviderCapabilities{
-		SchemaVersion:   "1.0.0",
-		Provider:        api.ProviderRef{ID: providerID, Version: providerVersion},
-		ManifestVersion: "1",
-		UpdatedAt:       time.Now().UTC(),
+// NewAdapter creates an OSV Adapter with explicit configuration and HTTP client.
+func NewAdapter(cfg Config, httpClient *http.Client) *Adapter {
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = defaultBaseURL
+	}
+	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 15 * time.Second}
+	}
+	return &Adapter{cfg: cfg, httpClient: httpClient}
+}
+
+// Descriptor declares the OSV adapter identity, supported PURL ecosystems, and capabilities (#70, #71).
+func (a *Adapter) Descriptor() api.AdapterDescriptor {
+	return api.AdapterDescriptor{
+		Slug:                   "osv",
+		AdapterVersion:         "1.0.0",
+		SupportedSchemaVersion: api.SchemaVersionV1,
+		SupportedInputs: api.SupportedInputs{
+			Types:      []api.ArtifactInputType{api.InputTypePURL},
+			Ecosystems: supportedPURLTypes,
+		},
 		Capabilities: []api.Capability{
-			{
-				ID:      "vulnerability",
-				Version: "v1",
-				InputProfiles: []api.InputProfile{
-					{
-						ID: "purl",
-						Requires: []api.Requirement{
-							{Kind: api.ReqPurl, Types: []string{
-								"pypi", "npm", "maven", "golang", "cargo", "gem",
-								"nuget", "composer", "hex", "pub", "swift", "generic",
-								// OSV indexes VS Code malware as ecosystem+name, not
-								// pkg:vscode-extension/… — Assess falls back when PURL is empty.
-								"vscode-extension",
-							}},
-						},
-					},
-				},
-				FindingTypes:        []string{"vulnerability"},
-				NativeOutputFormats: []string{"osv"},
-			},
+			api.CapabilityVulnerabilities,
+			api.CapabilityThreats,
 		},
-		// Capability flag: may receive anonymous adjudication (decision + PURL)
-		// when listed in SCINTX_FORWARD_ADJUDICATIONS.
-		AcceptsAdjudications: true,
 	}
-	caps.ManifestDigest = p.computeDigest()
-	return caps
 }
 
-func (p *Provider) computeDigest() string {
-	b, _ := json.Marshal([]any{"osv", providerVersion, "vulnerability:v1"})
-	h := sha256.Sum256(b)
-	return "sha256:" + hex.EncodeToString(h[:])
+// CheckAvailability validates the adapter's configuration, credentials, and readiness (#70, #73, #74).
+func (a *Adapter) CheckAvailability(ctx context.Context) api.AvailabilityStatus {
+	now := time.Now().UTC()
+	u, err := url.Parse(a.cfg.BaseURL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return api.AvailabilityStatus{
+			State:     api.StateUnconfigured,
+			Available: false,
+			Reasons:   []string{"invalid_configuration"},
+			Message:   fmt.Sprintf("invalid OSV base URL %q", a.cfg.BaseURL),
+			CheckedAt: now,
+		}
+	}
+	if a.cfg.RequireAuth && strings.TrimSpace(a.cfg.BearerToken) == "" {
+		return api.AvailabilityStatus{
+			State:     api.StateUnconfigured,
+			Available: false,
+			Reasons:   []string{"missing_credentials"},
+			Message:   "OSV mirror requires a bearer token, but none is configured",
+			CheckedAt: now,
+		}
+	}
+	if a.cfg.OfflineDemo || a.cfg.BaseURL == defaultBaseURL {
+		return api.AvailabilityStatus{
+			State:     api.StateReady,
+			Available: true,
+			CheckedAt: now,
+		}
+	}
+	return a.probeEndpoint(ctx, now)
 }
 
-func (p *Provider) Assess(ctx context.Context, artifact api.Artifact, capability api.Capability) (*api.ProviderResult, error) {
-	started := time.Now().UTC()
-	if p.client == nil {
-		p.client = newClientFromEnv()
-	}
-
-	if artifact.PURL == nil {
-		return errorResult(started, api.ErrNormalization, "no purl provided"), nil
-	}
-	canonical, err := api.CanonicalPurl(*artifact.PURL)
+func (a *Adapter) probeEndpoint(ctx context.Context, now time.Time) api.AvailabilityStatus {
+	probeBody := []byte(`{"package":{"purl":"pkg:npm/lodash@4.17.21"}}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.BaseURL+"/v1/query", bytes.NewReader(probeBody))
 	if err != nil {
-		return errorResult(started, api.ErrNormalization, "invalid purl: "+err.Error()), nil
+		return api.AvailabilityStatus{
+			State:     api.StateUnconfigured,
+			Available: false,
+			Reasons:   []string{"invalid_configuration"},
+			Message:   err.Error(),
+			CheckedAt: now,
+		}
 	}
-
-	vulns, raw, err := p.client.QueryByPURL(ctx, canonical)
+	req.Header.Set("Content-Type", "application/json")
+	if a.cfg.BearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+a.cfg.BearerToken)
+	}
+	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return mapClientError(started, err), nil
+		return api.AvailabilityStatus{
+			State:     api.StateUnreachable,
+			Available: false,
+			Reasons:   []string{"upstream_unreachable"},
+			Message:   err.Error(),
+			CheckedAt: now,
+		}
 	}
+	_ = resp.Body.Close()
 
-	// PURL queries miss VS Code malware that OSV stores under
-	// ecosystem "VSCode:<registry>" (e.g. MAL-2026-2231). Fall back.
-	if len(vulns) == 0 {
-		if typ, terr := api.PurlType(canonical); terr == nil && typ == "vscode-extension" {
-			vulns, raw, err = p.client.QueryVSCodeExtension(ctx, canonical)
-			if err != nil {
-				return mapClientError(started, err), nil
-			}
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return api.AvailabilityStatus{
+			State:     api.StateUnreachable,
+			Available: false,
+			Reasons:   []string{"authentication_failed"},
+			Message:   fmt.Sprintf("OSV rejected credentials with HTTP %d", resp.StatusCode),
+			CheckedAt: now,
+		}
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return api.AvailabilityStatus{
+			State:     api.StateDegraded,
+			Available: true,
+			Reasons:   []string{"rate_limited"},
+			Message:   "OSV API is currently rate-limited",
+			CheckedAt: now,
+		}
+	case resp.StatusCode != http.StatusOK:
+		return api.AvailabilityStatus{
+			State:     api.StateUnreachable,
+			Available: false,
+			Reasons:   []string{"upstream_unreachable"},
+			Message:   fmt.Sprintf("OSV returned HTTP %d", resp.StatusCode),
+			CheckedAt: now,
+		}
+	default:
+		return api.AvailabilityStatus{State: api.StateReady, Available: true, CheckedAt: now}
+	}
+}
+
+// Evaluate queries OSV and normalizes advisories into a ProviderReport (#70, #72).
+func (a *Adapter) Evaluate(ctx context.Context, req api.EvaluationRequest) (*api.EvaluationResult, error) {
+	if req.Artifact.PURL == "" {
+		return nil, &api.AdapterError{
+			Code:      api.ErrUnsupportedInput,
+			Message:   "osv adapter requires a package PURL",
+			Retryable: false,
+		}
+	}
+	if _, hasVer, err := api.PurlVersion(req.Artifact.PURL); err != nil || !hasVer {
+		return nil, &api.AdapterError{
+			Code:      api.ErrUnsupportedInput,
+			Message:   "osv adapter requires a versioned PURL",
+			Retryable: false,
 		}
 	}
 
-	findings := vulnsToFindings(canonical, vulns)
-	verdict := verdictFromFindings(findings)
-	finished := time.Now().UTC()
-	rawDigest := sha256.Sum256(raw)
-
-	return &api.ProviderResult{
-		ID:                       "res_" + api.RandHex(),
-		SchemaVersion:            "1.0.0",
-		Provider:                 api.ProviderRef{ID: providerID, Version: providerVersion},
-		Capabilities:             []string{"vulnerability:v1"},
-		CapabilityManifestDigest: p.ManifestDigest,
-		Execution:                api.Execution{Status: api.ExecutionCompleted, StartedAt: started, FinishedAt: finished},
-		Verdict:                  verdict,
-		Findings:                 findings,
-		RawResult: &api.ResourceReference{
-			URI:       "urn:scintx:blob:osv_" + api.RandHex(),
-			MediaType: "application/json",
-			Digests:   map[string]string{"sha256": hex.EncodeToString(rawDigest[:])},
-			Format:    "osv",
-		},
-	}, nil
-}
-
-// mapClientError turns OSV HTTP/transport failures into ProviderResult errors.
-func mapClientError(started time.Time, err error) *api.ProviderResult {
-	var he *httpError
-	if errors.As(err, &he) {
-		code := api.ErrProvider4xx
-		if he.Status >= 500 {
-			code = api.ErrProvider5xx
+	var (
+		vulns    []osvVulnerability
+		rawPages []json.RawMessage
+		err      error
+	)
+	if a.cfg.OfflineDemo {
+		vulns, rawPages = offlineFixtureForPURL(req.Artifact.PURL)
+	} else {
+		vulns, rawPages, err = a.queryWithFallback(ctx, req.Artifact.PURL)
+		if err != nil {
+			return nil, err
 		}
-		return errorResult(started, code, err.Error())
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return errorResult(started, api.ErrTimeout, err.Error())
-	}
-	return errorResult(started, api.ErrTransport, err.Error())
-}
 
-func errorResult(started time.Time, code api.ProviderErrorCode, msg string) *api.ProviderResult {
-	finished := time.Now().UTC()
-	return &api.ProviderResult{
-		ID:                       "res_" + api.RandHex(),
-		SchemaVersion:            "1.0.0",
-		Provider:                 api.ProviderRef{ID: providerID, Version: providerVersion},
-		Capabilities:             []string{"vulnerability:v1"},
-		CapabilityManifestDigest: "",
-		Execution: api.Execution{
-			Status:     api.ExecutionError,
-			StartedAt:  started,
-			FinishedAt: finished,
-			Error:      &api.ProviderError{Code: code, Message: msg},
-		},
-	}
-}
-
-// ReceiveAdjudication accepts anonymous adjudication feedback (decision + PURL).
-// Public OSV has no adjudication ingest API yet; this is a capability hook for
-// private mirrors / future feedback channels. It acknowledges and returns nil.
-func (p *Provider) ReceiveAdjudication(ctx context.Context, feedback api.AdjudicationFeedback) error {
-	_ = ctx
-	_ = p
-	_ = feedback
-	return nil
+	return buildOSVResult(req, vulns, rawPages)
 }

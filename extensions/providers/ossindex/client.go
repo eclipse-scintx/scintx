@@ -1,170 +1,203 @@
 // Copyright (c) 2026 Contributors to the Eclipse Foundation
 //
 // SPDX-License-Identifier: EPL-2.0
-// Package ossindex is a Sonatype OSS Index vulnerability provider.
-//
-// It queries the OSS Index / Sonatype Guide component-report API with a
-// versioned PURL and maps vulnerabilities to SCINTX Findings.
-//
-// Authentication is required (Sonatype Guide PAT). Resolution order:
-//
-//  1. SCINTX_OSSINDEX_TOKEN / SCINTX_OSSINDEX_USER (CI)
-//  2. OS keyring via `scintx auth ossindex`
-//  3. ~/.config/scintx/credentials (0600 fallback)
-//
-// Optional: SCINTX_OSSINDEX_BASE_URL (default https://ossindex.sonatype.org)
 package ossindex
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"strings"
-	"time"
 
-	"github.com/yeeth-security/scintx/credentials"
+	"github.com/yeeth-security/scintx/api"
 )
 
-const (
-	defaultBaseURL = "https://ossindex.sonatype.org"
-	// authHelp is shown on 401 and when the provider is skipped for missing credentials.
-	authHelp = "create a Guide PAT at https://guide.sonatype.com then run: scintx auth ossindex (or set SCINTX_OSSINDEX_TOKEN for CI)"
-)
-
-// Client talks to the Sonatype OSS Index HTTP API.
-type Client struct {
-	BaseURL    string
-	User       string // optional Basic Auth username (Guide PAT ignores it)
-	Token      string // required Basic Auth token / Guide PAT
-	HTTPClient *http.Client
-}
-
-func newClientFromEnv() *Client {
-	base := os.Getenv("SCINTX_OSSINDEX_BASE_URL")
-	if base == "" {
-		base = defaultBaseURL
-	}
-	c := &Client{
-		BaseURL: base,
-		HTTPClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-	}
-	// Env → keyring → credentials file (names from this package's credentials.Spec).
-	if r, err := credentials.Get(providerID); err == nil && r.Creds.Token != "" {
-		c.Token = r.Creds.Token
-		c.User = r.Creds.User
-	}
-	// Allow env user with keyring/file token (rare CI split).
-	if u := strings.TrimSpace(os.Getenv("SCINTX_OSSINDEX_USER")); u != "" {
-		c.User = u
-	}
-	return c
-}
-
-// reportRequest is the POST body for /api/v3/component-report.
 type reportRequest struct {
 	Coordinates []string `json:"coordinates"`
 }
 
-// ComponentReport is one package's vulnerability report from OSS Index.
-type ComponentReport struct {
-	Coordinates     string          `json:"coordinates"`
-	Description     string          `json:"description"`
-	Reference       string          `json:"reference"`
-	Vulnerabilities []Vulnerability `json:"vulnerabilities"`
+type componentReport struct {
+	Coordinates     string             `json:"coordinates"`
+	Description     string             `json:"description"`
+	Reference       string             `json:"reference"`
+	Vulnerabilities []ossVulnerability `json:"vulnerabilities"`
 }
 
-// Vulnerability is one OSS Index advisory entry.
-type Vulnerability struct {
-	ID                 string   `json:"id"`
-	DisplayName        string   `json:"displayName"`
-	Title              string   `json:"title"`
-	Description        string   `json:"description"`
-	CvssScore          *float64 `json:"cvssScore"`
-	CvssVector         string   `json:"cvssVector"`
-	Cwe                string   `json:"cwe"`
-	Cve                string   `json:"cve"`
-	Reference          string   `json:"reference"`
-	ExternalReferences []string `json:"externalReferences"`
+type ossVulnerability struct {
+	ID          string   `json:"id"`
+	DisplayName string   `json:"displayName"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	CvssScore   *float64 `json:"cvssScore"`
+	Cve         string   `json:"cve"`
 }
 
-// QueryByPURL returns the component report for a single versioned PURL.
-// The raw JSON body is also returned for RawResult digests.
-func (c *Client) QueryByPURL(ctx context.Context, purl string) (*ComponentReport, []byte, error) {
-	if c.HTTPClient == nil {
-		c.HTTPClient = &http.Client{Timeout: 30 * time.Second}
+// Evaluate queries Sonatype OSS Index (/api/v3/component-report) and maps results
+// into a normalized SCINTX ProviderReport (#70, #72, #74).
+func (a *Adapter) Evaluate(ctx context.Context, req api.EvaluationRequest) (*api.EvaluationResult, error) {
+	if req.Artifact.PURL == "" {
+		return nil, &api.AdapterError{
+			Code:      api.ErrUnsupportedInput,
+			Message:   "ossindex adapter requires a package PURL",
+			Retryable: false,
+		}
 	}
-	base := c.BaseURL
-	if base == "" {
-		base = defaultBaseURL
+	if _, hasVer, err := api.PurlVersion(req.Artifact.PURL); err != nil || !hasVer {
+		return nil, &api.AdapterError{
+			Code:      api.ErrUnsupportedInput,
+			Message:   "ossindex adapter requires a versioned PURL",
+			Retryable: false,
+		}
 	}
 
-	rawReq, err := json.Marshal(reportRequest{Coordinates: []string{purl}})
+	rawReq, err := json.Marshal(reportRequest{Coordinates: []string{req.Artifact.PURL}})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v3/component-report", bytes.NewReader(rawReq))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.BaseURL+"/api/v3/component-report", bytes.NewReader(rawReq))
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	// Guide PATs: username may be any value; token is the password.
-	if c.Token != "" {
-		user := c.User
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	if a.cfg.Token != "" {
+		user := a.cfg.Username
 		if user == "" {
 			user = "scintx"
 		}
-		req.SetBasicAuth(user, c.Token)
+		httpReq.SetBasicAuth(user, a.cfg.Token)
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, nil, err
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, &api.AdapterError{
+				Code:      api.ErrTimeout,
+				Message:   "OSS Index request timed out",
+				Retryable: true,
+				Cause:     err,
+			}
+		}
+		return nil, &api.AdapterError{
+			Code:      api.ErrUpstreamUnavailable,
+			Message:   "failed to reach OSS Index API",
+			Retryable: true,
+			Cause:     err,
+		}
 	}
-	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
-	if err != nil {
-		return nil, nil, err
-	}
-	if resp.StatusCode >= 400 {
-		return nil, respBody, &httpError{Status: resp.StatusCode, Body: truncate(string(respBody), 200)}
+	rawBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	_ = resp.Body.Close()
+	if readErr != nil {
+		return nil, &api.AdapterError{
+			Code:      api.ErrUpstreamUnavailable,
+			Message:   "failed to read OSS Index response body",
+			Retryable: true,
+			Cause:     readErr,
+		}
 	}
 
-	var reports []ComponentReport
-	if err := json.Unmarshal(respBody, &reports); err != nil {
-		return nil, respBody, fmt.Errorf("decode ossindex response: %w", err)
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, &api.AdapterError{
+			Code:      api.ErrAuthFailed,
+			Message:   fmt.Sprintf("OSS Index authentication failed with HTTP %d", resp.StatusCode),
+			Retryable: false,
+		}
 	}
-	if len(reports) == 0 {
-		// Empty array means the coordinate was accepted but has no report entry.
-		return &ComponentReport{Coordinates: purl}, respBody, nil
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, &api.AdapterError{
+			Code:      api.ErrRateLimited,
+			Message:   "OSS Index rate limit exceeded",
+			Retryable: true,
+		}
 	}
-	return &reports[0], respBody, nil
+	if resp.StatusCode != http.StatusOK {
+		return nil, &api.AdapterError{
+			Code:      api.ErrUpstreamUnavailable,
+			Message:   fmt.Sprintf("OSS Index returned HTTP %d", resp.StatusCode),
+			Retryable: resp.StatusCode >= 500,
+		}
+	}
+
+	var reports []componentReport
+	if err := json.Unmarshal(rawBody, &reports); err != nil {
+		return nil, &api.AdapterError{
+			Code:      api.ErrMalformedResponse,
+			Message:   "OSS Index response is not valid JSON",
+			Retryable: false,
+			Cause:     err,
+		}
+	}
+
+	findings := make([]api.Finding, 0)
+	for _, comp := range reports {
+		for _, v := range comp.Vulnerabilities {
+			if v.ID == "" && v.Cve == "" {
+				return nil, &api.AdapterError{
+					Code:      api.ErrMalformedResponse,
+					Message:   "OSS Index vulnerability entry is missing id and cve",
+					Retryable: false,
+				}
+			}
+			id := v.ID
+			if id == "" {
+				id = v.Cve
+			}
+			var ids []string
+			if v.ID != "" {
+				ids = append(ids, v.ID)
+			}
+			if v.Cve != "" && v.Cve != v.ID {
+				ids = append(ids, v.Cve)
+			}
+			findings = append(findings, api.Finding{
+				ID:          id,
+				Type:        "vulnerability",
+				Severity:    mapCVSSScore(v.CvssScore),
+				Title:       v.Title,
+				Description: v.Description,
+				Artifact:    &api.ArtifactInput{PURL: req.Artifact.PURL},
+				Identifiers: ids,
+			})
+		}
+	}
+
+	return &api.EvaluationResult{
+		Report: api.ProviderReport{
+			SchemaVersion:  api.SchemaVersionV1,
+			ProviderRunID:  req.ProviderRunID,
+			Provider:       "ossindex",
+			AdapterVersion: "1.0.0",
+			Capabilities: map[api.Capability]api.CapabilityReport{
+				api.CapabilityVulnerabilities: {
+					Status:   api.CapabilityStatusCompleted,
+					Checks:   []api.CheckResult{{ID: "known-vulnerabilities", Status: api.CapabilityStatusCompleted}},
+					Findings: findings,
+				},
+			},
+		},
+		RawEvidence: rawBody,
+	}, nil
 }
 
-type httpError struct {
-	Status int
-	Body   string
-}
-
-func (e *httpError) Error() string {
-	// Actionable guidance when Sonatype rejects credentials / anonymous access.
-	if e.Status == http.StatusUnauthorized || e.Status == http.StatusForbidden {
-		return "OSS Index auth required — " + authHelp
+func mapCVSSScore(score *float64) api.Severity {
+	if score == nil {
+		return api.SeverityUnknown
 	}
-	return fmt.Sprintf("ossindex http %d: %s", e.Status, e.Body)
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
+	switch {
+	case *score >= 9.0:
+		return api.SeverityCritical
+	case *score >= 7.0:
+		return api.SeverityHigh
+	case *score >= 4.0:
+		return api.SeverityMedium
+	case *score > 0:
+		return api.SeverityLow
+	default:
+		return api.SeverityInfo
 	}
-	return s[:n] + "…"
 }

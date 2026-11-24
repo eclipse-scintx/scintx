@@ -1,0 +1,63 @@
+# Policy schema version used by SCINTX (#68)
+schemaVersion: "1"
+
+# Policy identification and versioning
+id: baseline-security
+name: Baseline Security
+version: 1.0.0
+description: Basic supply chain security checks
+
+# Required: capabilities to evaluate and include in the Aggregate Report.
+# Rules can only reference capabilities declared here.
+capabilities:
+  - threats
+  - vulnerabilities
+  - health
+  - licenses
+
+# Rules that cause the Policy Verdict to be violated when triggered.
+violations:
+  known-malware:
+    description: Artifact contains known malware
+    when: |
+      threats.findings.any(
+        f => f.type == "malware"
+      )
+
+  critical-vulnerability:
+    description: Artifact contains critical vulnerabilities
+    when: |
+      vulnerabilities.findings.any(
+        f => f.severity == "critical"
+      )
+
+  # Provider execution failures are handled like any other violation.
+  # Remove this rule if the policy should tolerate incomplete provider runs.
+  provider-run-incomplete:
+    description: A selected provider run did not complete successfully
+    when: |
+      aggregateReport.providerRuns.any(
+        r => r.status != "completed"
+      )
+
+# Informational rules that do not affect the Policy Verdict.
+annotations:
+  needs-review:
+    description: Artifact has high-severity findings
+    when: |
+      vulnerabilities.findings.any(
+        f => f.severity == "high"
+      )
+
+# Maximum time from submission creation before evaluating available evidence.
+evaluationDeadline: 10m
+
+# Optional: control which provider adapters are requested or eligible.
+providers:
+  requested:
+    - osv
+  allowlist:
+    - osv
+    - ossindex
+  denylist:
+    - acme

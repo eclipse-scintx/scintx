@@ -7,180 +7,160 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
-	"time"
 
-	"github.com/yeeth-security/scintx/credentials"
+	"github.com/yeeth-security/scintx/api"
 )
 
-const defaultBaseURL = "https://api.osv.dev"
-
-// Client talks to the OSV HTTP API (https://osv.dev).
-//
-// Optional outbound auth (for private mirrors / future API gateways):
-//
-//	SCINTX_OSV_BEARER_TOKEN — Authorization: Bearer <token>
-//	  (also via `scintx auth osv` / keyring / credentials file)
-//	SCINTX_OSV_API_KEY      — X-Api-Key: <key> (used when bearer is unset; env only)
-type Client struct {
-	BaseURL     string
-	BearerToken string
-	APIKey      string
-	HTTPClient  *http.Client
+type osvQueryRequest struct {
+	Package   *osvPackage `json:"package,omitempty"`
+	Version   string      `json:"version,omitempty"`
+	PageToken string      `json:"page_token,omitempty"`
 }
 
-func newClientFromEnv() *Client {
-	base := os.Getenv("SCINTX_OSV_BASE_URL")
-	if base == "" {
-		base = defaultBaseURL
-	}
-	c := &Client{
-		BaseURL: base,
-		APIKey:  strings.TrimSpace(os.Getenv("SCINTX_OSV_API_KEY")),
-		HTTPClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-	}
-	// Bearer: env → keyring → file (see credentials.Spec in auth.go).
-	if r, err := credentials.Get("osv"); err == nil && r.Creds.Token != "" {
-		c.BearerToken = r.Creds.Token
-	}
-	return c
-}
-
-type queryRequest struct {
-	Package   *queryPackage `json:"package,omitempty"`
-	Version   string        `json:"version,omitempty"`
-	PageToken string        `json:"page_token,omitempty"`
-}
-
-// queryPackage is the OSV "package" object. PURL and ecosystem/name are
-// alternate identification styles — OSV accepts either.
-type queryPackage struct {
+type osvPackage struct {
 	PURL      string `json:"purl,omitempty"`
 	Ecosystem string `json:"ecosystem,omitempty"`
 	Name      string `json:"name,omitempty"`
 }
 
-type queryResponse struct {
-	Vulns         []Vulnerability `json:"vulns"`
-	NextPageToken string          `json:"next_page_token,omitempty"`
+type osvQueryResponse struct {
+	Vulns         []osvVulnerability `json:"vulns"`
+	NextPageToken string             `json:"next_page_token,omitempty"`
 }
 
-// Vulnerability is a subset of the OSV schema used for mapping to Findings.
-type Vulnerability struct {
-	ID               string            `json:"id"`
-	Summary          string            `json:"summary"`
-	Details          string            `json:"details"`
-	Aliases          []string          `json:"aliases"`
-	Related          []string          `json:"related"`
-	Severity         []osvSeverity     `json:"severity"`
-	References       []osvReference    `json:"references"`
-	DatabaseSpecific map[string]any    `json:"database_specific"`
-	Affected         []json.RawMessage `json:"affected"`
+type osvVulnerability struct {
+	ID               string         `json:"id"`
+	Summary          string         `json:"summary"`
+	Details          string         `json:"details"`
+	Aliases          []string       `json:"aliases"`
+	DatabaseSpecific map[string]any `json:"database_specific"`
 }
 
-type osvSeverity struct {
-	Type  string `json:"type"`
-	Score string `json:"score"`
-}
-
-type osvReference struct {
-	Type string `json:"type"`
-	URL  string `json:"url"`
-}
-
-// QueryByPURL returns all vulnerability pages for a versioned PURL.
-func (c *Client) QueryByPURL(ctx context.Context, purl string) ([]Vulnerability, []byte, error) {
-	return c.query(ctx, &queryPackage{PURL: purl}, "")
-}
-
-// QueryByEcosystem returns all vulnerability pages for an OSV ecosystem
-// package (ecosystem + name + optional version). Used when PURL lookup is
-// empty but OSV indexes the package under a non-PURL ecosystem string
-// (notably VS Code extensions: "VSCode:https://open-vsx.org").
-func (c *Client) QueryByEcosystem(ctx context.Context, ecosystem, name, version string) ([]Vulnerability, []byte, error) {
-	return c.query(ctx, &queryPackage{Ecosystem: ecosystem, Name: name}, version)
-}
-
-// query POSTs /v1/query and follows next_page_token until exhausted.
-func (c *Client) query(ctx context.Context, pkg *queryPackage, version string) ([]Vulnerability, []byte, error) {
-	if c.HTTPClient == nil {
-		c.HTTPClient = &http.Client{Timeout: 30 * time.Second}
+// queryWithFallback queries OSV POST /v1/query by PURL, and falls back to
+// the Open VSX ecosystem query if the package is a vscode-extension (#43, #70).
+func (a *Adapter) queryWithFallback(ctx context.Context, purl string) ([]osvVulnerability, []json.RawMessage, error) {
+	vulns, pages, err := a.queryAllPages(ctx, osvQueryRequest{
+		Package: &osvPackage{PURL: purl},
+	})
+	if err != nil {
+		return nil, nil, err
 	}
-	base := c.BaseURL
-	if base == "" {
-		base = defaultBaseURL
+	if len(vulns) == 0 && strings.HasPrefix(purl, "pkg:vscode-extension/") {
+		if extName, version, ok := parseVSCodeExtensionPURL(purl); ok {
+			fbVulns, fbPages, fbErr := a.queryAllPages(ctx, osvQueryRequest{
+				Package: &osvPackage{
+					Ecosystem: "VSCode:https://open-vsx.org",
+					Name:      extName,
+				},
+				Version: version,
+			})
+			if fbErr != nil {
+				return nil, nil, fbErr
+			}
+			vulns = fbVulns
+			pages = append(pages, fbPages...)
+		}
 	}
+	return vulns, pages, nil
+}
 
-	var all []Vulnerability
-	var rawPages []json.RawMessage
+// queryAllPages calls POST /v1/query and follows next_page_token until exhausted (#70, #74).
+func (a *Adapter) queryAllPages(
+	ctx context.Context,
+	baseReq osvQueryRequest,
+) ([]osvVulnerability, []json.RawMessage, error) {
+	var all []osvVulnerability
+	var pages []json.RawMessage
 	pageToken := ""
 
 	for {
-		body := queryRequest{Package: pkg, Version: version, PageToken: pageToken}
-		raw, err := json.Marshal(body)
+		baseReq.PageToken = pageToken
+		body, err := json.Marshal(baseReq)
 		if err != nil {
 			return nil, nil, err
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/query", bytes.NewReader(raw))
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.BaseURL+"/v1/query", bytes.NewReader(body))
 		if err != nil {
 			return nil, nil, err
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json")
-		// Optional credentials for authenticated OSV mirrors / gateways.
-		if c.BearerToken != "" {
-			req.Header.Set("Authorization", "Bearer "+c.BearerToken)
-		} else if c.APIKey != "" {
-			req.Header.Set("X-Api-Key", c.APIKey)
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "application/json")
+		if a.cfg.BearerToken != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+a.cfg.BearerToken)
 		}
 
-		resp, err := c.HTTPClient.Do(req)
+		resp, err := a.httpClient.Do(httpReq)
 		if err != nil {
-			return nil, nil, err
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, nil, &api.AdapterError{
+					Code:      api.ErrTimeout,
+					Message:   "OSV request timed out",
+					Retryable: true,
+					Cause:     err,
+				}
+			}
+			return nil, nil, &api.AdapterError{
+				Code:      api.ErrUpstreamUnavailable,
+				Message:   "failed to reach OSV /v1/query endpoint",
+				Retryable: true,
+				Cause:     err,
+			}
 		}
-		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+
+		rawBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 		_ = resp.Body.Close()
 		if readErr != nil {
-			return nil, nil, readErr
-		}
-		if resp.StatusCode >= 400 {
-			return nil, respBody, &httpError{Status: resp.StatusCode, Body: truncate(string(respBody), 200)}
+			return nil, nil, &api.AdapterError{
+				Code:      api.ErrUpstreamUnavailable,
+				Message:   "failed to read OSV response body",
+				Retryable: true,
+				Cause:     readErr,
+			}
 		}
 
-		var parsed queryResponse
-		if err := json.Unmarshal(respBody, &parsed); err != nil {
-			return nil, respBody, fmt.Errorf("decode osv response: %w", err)
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, nil, &api.AdapterError{
+				Code:      api.ErrAuthFailed,
+				Message:   fmt.Sprintf("OSV authentication failed with HTTP %d", resp.StatusCode),
+				Retryable: false,
+			}
 		}
-		all = append(all, parsed.Vulns...)
-		rawPages = append(rawPages, respBody)
-		if parsed.NextPageToken == "" {
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return nil, nil, &api.AdapterError{
+				Code:      api.ErrRateLimited,
+				Message:   "OSV API rate limit exceeded",
+				Retryable: true,
+			}
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, nil, &api.AdapterError{
+				Code:      api.ErrUpstreamUnavailable,
+				Message:   fmt.Sprintf("OSV /v1/query returned HTTP %d", resp.StatusCode),
+				Retryable: resp.StatusCode >= 500,
+			}
+		}
+
+		var page osvQueryResponse
+		if err := json.Unmarshal(rawBody, &page); err != nil {
+			return nil, nil, &api.AdapterError{
+				Code:      api.ErrMalformedResponse,
+				Message:   "OSV /v1/query response is not valid JSON",
+				Retryable: false,
+				Cause:     err,
+			}
+		}
+		all = append(all, page.Vulns...)
+		pages = append(pages, rawBody)
+
+		if page.NextPageToken == "" {
 			break
 		}
-		pageToken = parsed.NextPageToken
+		pageToken = page.NextPageToken
 	}
-
-	combined, _ := json.Marshal(map[string]any{"pages": rawPages, "count": len(all)})
-	return all, combined, nil
-}
-
-type httpError struct {
-	Status int
-	Body   string
-}
-
-func (e *httpError) Error() string {
-	return fmt.Sprintf("osv http %d: %s", e.Status, e.Body)
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
+	return all, pages, nil
 }
