@@ -131,7 +131,7 @@ func PurlVersion(purl string) (string, bool, error) {
 }
 
 // extractVSIXPURL inspects a ZIP/VSIX archive for extension/package.json and builds
-// a pkg:vscode-extension/<publisher>/<name>@<version> PURL when present (#67).
+// a pkg:vscode-extension/<publisher>/<name>@<version> PURL when present.
 func extractVSIXPURL(content []byte) string {
 	zr, err := zip.NewReader(bytes.NewReader(content), int64(len(content)))
 	if err != nil {

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: EPL-2.0
 
 // Package auth provides optional Bearer token authentication for consumer requests
-// to the SCINTX Gateway, matching the Open VSX RemoteScanner bearer configuration (#67, #73).
+// to the Eclipse SCINTX Gateway, matching the Open VSX RemoteScanner bearer configuration.
 package auth
 
 import (
@@ -16,7 +16,7 @@ import (
 )
 
 // Middleware enforces Bearer token authentication on /v1/* routes when expectedToken is non-empty.
-// Health probes (/healthz and /readyz) remain unauthenticated so container orchestrators can probe them (#41).
+// Health probes (/healthz and /readyz) remain unauthenticated so container orchestrators can probe them.
 func Middleware(expectedToken string, next http.Handler) http.Handler {
 	token := strings.TrimSpace(expectedToken)
 	if token == "" {

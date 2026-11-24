@@ -37,8 +37,8 @@ func main() {
 
 func printUsage() {
 	fmt.Fprintf(os.Stderr, `Usage:
-  scintx              Start the SCINTX HTTP gateway (same as: scintx serve)
-  scintx serve        Start the SCINTX HTTP gateway
+  scintx              Start the Eclipse SCINTX HTTP gateway (same as: scintx serve)
+  scintx serve        Start the Eclipse SCINTX HTTP gateway
   scintx health       Probe gateway readiness (/readyz) for container healthchecks
   scintx help         Show this help
 `)

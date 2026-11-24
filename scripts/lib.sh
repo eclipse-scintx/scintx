@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: EPL-2.0
 
-# Shared helpers for SCINTX dev scripts.
+# Shared helpers for Eclipse SCINTX dev scripts.
 # Sourced by other scripts — not meant to be run directly.
 
 set -euo pipefail

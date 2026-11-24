@@ -1,7 +1,7 @@
-# SCINTX developer entrypoints. Prefer `make <target>` or `./scripts/<name>.sh`.
+# Eclipse SCINTX developer entrypoints. Prefer `make <target>` or `./scripts/<name>.sh`.
 # Run `make help` for the list.
 
-.PHONY: help fmt vet test test-race generate build run demo schemas check tidy clean hooks
+.PHONY: help fmt vet test test-race build run demo schemas check tidy clean hooks
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make <target>\n\nTargets:\n"} \
@@ -19,9 +19,6 @@ test: ## Run go test ./...
 test-race: ## Run go test -race (falls back without CGO)
 	./scripts/test-race.sh
 
-generate: ## Regenerate extensions/providers/all aggregator
-	./scripts/generate.sh
-
 build: ## Build bin/scintx
 	./scripts/build.sh
 
@@ -34,7 +31,7 @@ demo: ## Run deterministic offline demonstration (startup, submit, status, valid
 schemas: ## Validate JSON Schema fixtures
 	./scripts/schemas.sh
 
-check: ## Local CI: fmt, headers, generate drift, vet, tests, schemas
+check: ## Local CI: fmt, headers, vet, tests, schemas
 	./scripts/check.sh
 
 tidy: ## go mod tidy

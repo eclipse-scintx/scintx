@@ -1,172 +1,125 @@
 // Copyright (c) 2026 Contributors to the Eclipse Foundation
 //
 // SPDX-License-Identifier: EPL-2.0
+
 package api
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
-	"regexp"
 	"strings"
 )
 
-// SchemaVersionV1 identifies version 1 of the SCINTX JSON and YAML schemas (#68, #69).
+// SchemaVersionV1 is the current public Eclipse SCINTX payload schema version.
 const SchemaVersionV1 = "1"
 
-// Capability represents a first-class SCINTX analysis category (#68, #71).
-// Policies declare these capabilities at the top level to drive provider selection.
-type Capability string
+// DefaultMaxContentBytes is the default 64 MiB limit for raw artifact uploads.
+const DefaultMaxContentBytes int64 = 64 * 1024 * 1024
 
-const (
-	CapabilityVulnerabilities Capability = "vulnerabilities"
-	CapabilityThreats         Capability = "threats"
-	CapabilityLicenses        Capability = "licenses"
-	CapabilityHealth          Capability = "health"
-	CapabilityIntegrity       Capability = "integrity"
-	CapabilityDependencies    Capability = "dependencies"
-)
-
-// ValidCapabilities lists all recognized SCINTX capabilities.
-var ValidCapabilities = map[Capability]bool{
-	CapabilityVulnerabilities: true,
-	CapabilityThreats:         true,
-	CapabilityLicenses:        true,
-	CapabilityHealth:          true,
-	CapabilityIntegrity:       true,
-	CapabilityDependencies:    true,
-}
-
-// NormalizeCapability maps singular aliases (such as "vulnerability" from #68 examples)
-// to their canonical plural capability name ("vulnerabilities").
-func NormalizeCapability(raw string) Capability {
-	trimmed := strings.ToLower(strings.TrimSpace(raw))
-	if trimmed == "vulnerability" {
-		return CapabilityVulnerabilities
-	}
-	return Capability(trimmed)
-}
-
-// ArtifactInputType identifies how a consumer supplied an artifact (#68, #71).
-type ArtifactInputType string
-
-const (
-	InputTypePURL    ArtifactInputType = "purl"
-	InputTypeDigest  ArtifactInputType = "digest"
-	InputTypeContent ArtifactInputType = "content"
-)
-
-// Digest represents a cryptographic hash algorithm and hex value (#68).
-type Digest struct {
-	Algorithm string `json:"algorithm"`
-	Value     string `json:"value"`
-}
-
-// ContentMetadata describes uploaded artifact bytes (#70).
+// ContentMetadata records metadata derived from raw artifact content bytes.
 type ContentMetadata struct {
+	SHA256    string `json:"sha256"`
+	SizeBytes int64  `json:"sizeBytes"`
 	Filename  string `json:"filename,omitempty"`
 	MediaType string `json:"mediaType,omitempty"`
-	SizeBytes int64  `json:"sizeBytes,omitempty"`
 }
 
-// ArtifactInput holds the normalized artifact identifiers and optional uploaded bytes (#68, #70).
-// We preserve both the original consumer input and any gateway-derived digest or PURL.
+// ArtifactInput represents the submitted artifact for evaluation.
+// At least one of PURL, Digest, or Content must be supplied.
 type ArtifactInput struct {
-	// PURL is a Package URL identifying the package by ecosystem, name, and version.
-	PURL string `json:"purl,omitempty"`
-
-	// Digest is a cryptographic hash of the artifact contents.
-	Digest *Digest `json:"digest,omitempty"`
-
-	// Filename is the uploaded file name when artifact bytes were supplied.
-	Filename string `json:"filename,omitempty"`
-
-	// MediaType is the MIME type of the uploaded artifact bytes.
-	MediaType string `json:"mediaType,omitempty"`
-
-	// ContentMeta holds size and file metadata for adapter inspection.
-	ContentMeta *ContentMetadata `json:"contentMeta,omitempty"`
-
-	// Content holds raw uploaded bytes in memory. It is never serialized into JSON reports.
-	Content []byte `json:"-"`
-
-	// OpenContent opens a reader for the uploaded bytes when Content is present.
-	OpenContent func() (io.ReadCloser, error) `json:"-"`
+	PURL        string           `json:"purl,omitempty"`
+	Digest      string           `json:"digest,omitempty"`
+	Content     []byte           `json:"-"`
+	Filename    string           `json:"-"`
+	MediaType   string           `json:"-"`
+	ContentMeta *ContentMetadata `json:"content,omitempty"`
 }
 
-var hexDigestRe = regexp.MustCompile(`^[a-fA-F0-9]{32,128}$`)
-
-var supportedDigestAlgorithms = map[string]bool{
-	"sha256": true,
-	"sha384": true,
-	"sha512": true,
-}
-
-// ValidateAndNormalizeArtifact validates the consumer's artifact input (#68).
-// It checks PURL syntax, digest algorithm/hex formatting, and size limits.
-// When raw bytes are uploaded, it calculates the SHA-256 digest and attempts
-// to extract package coordinates from VSIX archives for Open VSX compatibility (#67).
-func ValidateAndNormalizeArtifact(a *ArtifactInput, maxBytes int64) error {
-	if a == nil {
-		return fmt.Errorf("artifact is required")
+// ValidateAndNormalizeArtifact validates the submitted artifact fields,
+// canonicalizes any PURL, checks digest formatting, and computes SHA-256
+// metadata when raw content bytes are supplied.
+func ValidateAndNormalizeArtifact(in ArtifactInput, maxBytes int64) (ArtifactInput, error) {
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxContentBytes
 	}
-	hasPURL := strings.TrimSpace(a.PURL) != ""
-	hasDigest := a.Digest != nil && (a.Digest.Algorithm != "" || a.Digest.Value != "")
-	hasContent := len(a.Content) > 0
-
-	if !hasPURL && !hasDigest && !hasContent {
-		return fmt.Errorf("artifact must provide at least one of purl, digest, or content bytes")
+	out := ArtifactInput{
+		PURL:      strings.TrimSpace(in.PURL),
+		Digest:    strings.ToLower(strings.TrimSpace(in.Digest)),
+		Content:   in.Content,
+		Filename:  strings.TrimSpace(in.Filename),
+		MediaType: strings.TrimSpace(in.MediaType),
 	}
 
-	if hasPURL {
-		canonical, err := CanonicalPurl(strings.TrimSpace(a.PURL))
+	// If raw content is uploaded without a PURL, check if it is a .vsix package.
+	if out.PURL == "" && len(out.Content) > 0 && strings.HasSuffix(strings.ToLower(out.Filename), ".vsix") {
+		if extracted := extractVSIXPURL(out.Content); extracted != "" {
+			out.PURL = extracted
+		}
+	}
+
+	if out.PURL == "" && out.Digest == "" && len(out.Content) == 0 {
+		return ArtifactInput{}, fmt.Errorf("artifact requires at least one of purl, digest, or content")
+	}
+
+	if out.PURL != "" {
+		canonical, err := CanonicalPurl(out.PURL)
 		if err != nil {
-			return fmt.Errorf("invalid purl: %w", err)
+			return ArtifactInput{}, fmt.Errorf("invalid purl: %w", err)
 		}
-		a.PURL = canonical
+		out.PURL = canonical
 	}
 
-	if hasDigest {
-		alg := strings.ToLower(strings.TrimSpace(a.Digest.Algorithm))
-		val := strings.ToLower(strings.TrimSpace(a.Digest.Value))
-		if !supportedDigestAlgorithms[alg] {
-			return fmt.Errorf("unsupported digest algorithm %q (supported: sha256, sha384, sha512)", a.Digest.Algorithm)
+	if out.Digest != "" {
+		if err := ValidateDigest(out.Digest); err != nil {
+			return ArtifactInput{}, err
 		}
-		if !hexDigestRe.MatchString(val) {
-			return fmt.Errorf("invalid digest value for %s: must be hexadecimal", alg)
-		}
-		a.Digest = &Digest{Algorithm: alg, Value: val}
 	}
 
-	if hasContent {
-		if maxBytes > 0 && int64(len(a.Content)) > maxBytes {
-			return fmt.Errorf("artifact content size %d exceeds maximum %d bytes", len(a.Content), maxBytes)
+	if len(out.Content) > 0 {
+		if int64(len(out.Content)) > maxBytes {
+			return ArtifactInput{}, fmt.Errorf("artifact content size %d exceeds maximum %d bytes", len(out.Content), maxBytes)
 		}
-		sum := sha256.Sum256(a.Content)
-		calculatedHex := hex.EncodeToString(sum[:])
-		if hasDigest && a.Digest.Algorithm == "sha256" && a.Digest.Value != calculatedHex {
-			return fmt.Errorf("supplied sha256 digest %s does not match uploaded content digest %s", a.Digest.Value, calculatedHex)
+		sum := sha256.Sum256(out.Content)
+		hexSum := hex.EncodeToString(sum[:])
+		if out.Digest == "" {
+			out.Digest = "sha256:" + hexSum
 		}
-		if !hasDigest {
-			a.Digest = &Digest{Algorithm: "sha256", Value: calculatedHex}
+		out.ContentMeta = &ContentMetadata{
+			SHA256:    hexSum,
+			SizeBytes: int64(len(out.Content)),
+			Filename:  out.Filename,
+			MediaType: out.MediaType,
 		}
-		a.ContentMeta = &ContentMetadata{
-			Filename:  a.Filename,
-			MediaType: a.MediaType,
-			SizeBytes: int64(len(a.Content)),
-		}
-		rawBytes := a.Content
-		a.OpenContent = func() (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(rawBytes)), nil
-		}
-		// Derive a vscode-extension PURL if the uploaded content is a VSIX archive (#67).
-		if a.PURL == "" {
-			if derived := extractVSIXPURL(a.Content); derived != "" {
-				a.PURL = derived
-			}
-		}
+	}
+
+	return out, nil
+}
+
+// ValidateDigest verifies that a digest string uses a supported algorithm
+// prefix (sha256, sha384, sha512) and valid hexadecimal characters.
+func ValidateDigest(d string) error {
+	parts := strings.SplitN(strings.ToLower(strings.TrimSpace(d)), ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid digest %q: expected <algorithm>:<hex>", d)
+	}
+	alg, val := parts[0], parts[1]
+	var expectedLen int
+	switch alg {
+	case "sha256":
+		expectedLen = 64
+	case "sha384":
+		expectedLen = 96
+	case "sha512":
+		expectedLen = 128
+	default:
+		return fmt.Errorf("unsupported digest algorithm %q", alg)
+	}
+	if len(val) != expectedLen {
+		return fmt.Errorf("invalid %s digest length: got %d hex chars, want %d", alg, len(val), expectedLen)
+	}
+	if _, err := hex.DecodeString(val); err != nil {
+		return fmt.Errorf("invalid digest hex in %q: %w", d, err)
 	}
 	return nil
 }

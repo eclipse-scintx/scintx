@@ -10,40 +10,34 @@
       "pattern": "^pkg:[a-zA-Z0-9._-]+/.+"
     },
     "digest": {
+      "type": "string",
+      "pattern": "^(sha256:[a-fA-F0-9]{64}|sha384:[a-fA-F0-9]{96}|sha512:[a-fA-F0-9]{128})$"
+    },
+    "content": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["algorithm", "value"],
+      "required": ["sha256", "sizeBytes"],
       "properties": {
-        "algorithm": {
+        "sha256": {
           "type": "string",
-          "enum": ["sha256", "sha384", "sha512"]
+          "pattern": "^[a-fA-F0-9]{64}$"
         },
-        "value": {
-          "type": "string",
-          "pattern": "^[a-fA-F0-9]{32,128}$"
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "filename": {
+          "type": "string"
+        },
+        "mediaType": {
+          "type": "string"
         }
-      }
-    },
-    "filename": {
-      "type": "string"
-    },
-    "mediaType": {
-      "type": "string"
-    },
-    "contentMeta": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["sizeBytes"],
-      "properties": {
-        "filename": { "type": "string" },
-        "mediaType": { "type": "string" },
-        "sizeBytes": { "type": "integer", "minimum": 1 }
       }
     }
   },
   "anyOf": [
     { "required": ["purl"] },
     { "required": ["digest"] },
-    { "required": ["contentMeta"] }
+    { "required": ["content"] }
   ]
 }

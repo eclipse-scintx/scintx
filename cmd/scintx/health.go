@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// runHealth probes the gateway's /readyz endpoint (#41).
+// runHealth probes the gateway's /readyz endpoint.
 // It allows a minimal distroless container image without curl or a shell
 // to execute container liveness and readiness healthchecks directly.
 func runHealth(args []string) error {

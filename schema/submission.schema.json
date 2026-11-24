@@ -4,50 +4,32 @@
   "title": "Submission",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "id", "status", "acceptedAt", "artifact", "policy"],
+  "required": ["schemaVersion", "id", "status", "acceptedAt", "artifact"],
   "properties": {
-    "schemaVersion": { "type": "string", "const": "1" },
-    "id": { "type": "string", "minLength": 1 },
+    "schemaVersion": {
+      "const": "1"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
     "status": {
       "type": "string",
       "enum": ["accepted", "running", "completed", "failed"]
     },
-    "acceptedAt": { "type": "string" },
-    "completedAt": { "type": "string" },
+    "acceptedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "completedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
     "artifact": {
-      "$ref": "https://scintx.example/schema/artifact.schema.json"
+      "$ref": "artifact.schema.json"
     },
-    "policy": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "version"],
-      "properties": {
-        "id": { "type": "string" },
-        "version": { "type": "string" }
-      }
-    },
-    "providerSummary": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["selected", "completed", "failed", "timedOut", "incomplete"],
-      "properties": {
-        "selected": { "type": "integer", "minimum": 0 },
-        "completed": { "type": "integer", "minimum": 0 },
-        "failed": { "type": "integer", "minimum": 0 },
-        "timedOut": { "type": "integer", "minimum": 0 },
-        "incomplete": { "type": "integer", "minimum": 0 }
-      }
-    },
-    "evidenceStatus": {
-      "type": "string",
-      "enum": ["complete", "partial", "unavailable"]
-    },
-    "policyVerdict": {
-      "type": "string",
-      "enum": ["satisfied", "violated", "undetermined"]
-    },
-    "aggregateReportId": { "type": "string" },
-    "policyReportId": { "type": "string" },
-    "error": { "type": "string" }
+    "error": {
+      "type": "string"
+    }
   }
 }

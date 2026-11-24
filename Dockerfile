@@ -21,17 +21,16 @@ FROM gcr.io/distroless/static-debian12:nonroot
 
 WORKDIR /app
 
-# Copy compiled gateway binary and default read-only configuration/policies.
+# Copy compiled gateway binary and default read-only configuration.
 COPY --from=builder /out/scintx /scintx
 COPY --from=builder /src/gateway.yaml /app/gateway.yaml
-COPY --from=builder /src/policies /app/policies
 
 # Run as non-root user (65532:65532).
 USER 65532:65532
 
 EXPOSE 8080
 
-# Built-in health probe works inside distroless without curl or a shell (#41).
+# Built-in health probe works inside distroless without curl or a shell.
 HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
     CMD ["/scintx", "health"]
 

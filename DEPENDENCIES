@@ -1,4 +1,4 @@
-# Third-party dependencies of SCINTX
+# Third-party dependencies of Eclipse SCINTX
 #
 # This file lists every third-party Go module dependency and its license.
 # It includes direct dependencies (go.mod) and transitive dependencies.

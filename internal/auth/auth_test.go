@@ -17,7 +17,7 @@ func TestBearerAuthMiddleware(t *testing.T) {
 	})
 	handler := auth.Middleware("secret-gateway-token", inner)
 
-	// Health probes bypass bearer auth (#41).
+	// Health probes bypass bearer auth.
 	reqHealth := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	recHealth := httptest.NewRecorder()
 	handler.ServeHTTP(recHealth, reqHealth)

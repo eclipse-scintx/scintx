@@ -68,7 +68,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        An adapter merged into SCINTX is project source. SCINTX cannot merge:
+        An adapter merged into Eclipse SCINTX is project source. Eclipse SCINTX cannot merge:
 
         - Code that cannot be contributed under the [EPL-2.0](https://www.eclipse.org/legal/epl-2.0/).
         - A vendor binary, data feed, or proprietary SDK committed to the repository.
@@ -82,7 +82,7 @@ body:
     attributes:
       label: Provider license and known limitations
       description: |
-        Write the license or terms for the provider itself (the API, binary, feed, or data). Note any known limitations those terms create for an adapter merged into SCINTX.
+        Write the license or terms for the provider itself (the API, binary, feed, or data). Note any known limitations those terms create for an adapter merged into Eclipse SCINTX.
     validations:
       required: true
 

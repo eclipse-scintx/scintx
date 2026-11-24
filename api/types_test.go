@@ -1,83 +1,59 @@
 // Copyright (c) 2026 Contributors to the Eclipse Foundation
 //
 // SPDX-License-Identifier: EPL-2.0
-package api_test
+
+package api
 
 import (
-	"archive/zip"
-	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
+	"strings"
 	"testing"
-
-	"github.com/yeeth-security/scintx/api"
 )
 
-func TestValidateAndNormalizeArtifact_PURL(t *testing.T) {
-	input := &api.ArtifactInput{PURL: "pkg:NPM/Lodash@4.17.21"}
-	if err := api.ValidateAndNormalizeArtifact(input, 1024); err != nil {
+func TestValidateAndNormalizeArtifact(t *testing.T) {
+	// Empty artifact must fail validation.
+	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{}, 1024); err == nil {
+		t.Fatal("expected error for empty artifact")
+	}
+
+	// Valid PURL normalizes cleanly.
+	a, err := ValidateAndNormalizeArtifact(ArtifactInput{PURL: "pkg:NPM/lodash@4.17.20"}, 1024)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if input.PURL != "pkg:npm/lodash@4.17.21" {
-		t.Fatalf("got purl %q, want canonical pkg:npm/lodash@4.17.21", input.PURL)
-	}
-}
-
-func TestValidateAndNormalizeArtifact_Digest(t *testing.T) {
-	sum := sha256.Sum256([]byte("hello"))
-	hexVal := hex.EncodeToString(sum[:])
-
-	input := &api.ArtifactInput{
-		Digest: &api.Digest{Algorithm: "SHA256", Value: hexVal},
-	}
-	if err := api.ValidateAndNormalizeArtifact(input, 1024); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if input.Digest.Algorithm != "sha256" {
-		t.Fatalf("expected lowercase sha256, got %q", input.Digest.Algorithm)
+	if a.PURL != "pkg:npm/lodash@4.17.20" {
+		t.Fatalf("got %q, want pkg:npm/lodash@4.17.20", a.PURL)
 	}
 
-	// Unsupported digest algorithm must fail validation.
-	badAlg := &api.ArtifactInput{
-		Digest: &api.Digest{Algorithm: "md5", Value: hexVal},
+	// Valid SHA-256 digest succeeds.
+	validDigest := "sha256:" + strings.Repeat("a", 64)
+	a, err = ValidateAndNormalizeArtifact(ArtifactInput{Digest: validDigest}, 1024)
+	if err != nil || a.Digest != validDigest {
+		t.Fatalf("unexpected digest validation result: %v, %+v", err, a)
 	}
-	if err := api.ValidateAndNormalizeArtifact(badAlg, 1024); err == nil {
+
+	// Invalid digest algorithm or length must fail.
+	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{Digest: "md5:1234"}, 1024); err == nil {
 		t.Fatal("expected error for unsupported digest algorithm")
 	}
-}
+	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{Digest: "sha256:1234"}, 1024); err == nil {
+		t.Fatal("expected error for short sha256 digest")
+	}
 
-func TestValidateAndNormalizeArtifact_VSIXContent(t *testing.T) {
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-	w, err := zw.Create("extension/package.json")
+	// Raw content populates ContentMeta and SHA-256 digest.
+	a, err = ValidateAndNormalizeArtifact(ArtifactInput{
+		Content:   []byte("hello world"),
+		Filename:  "hello.txt",
+		MediaType: "text/plain",
+	}, 1024)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("unexpected error for content: %v", err)
 	}
-	_, _ = w.Write([]byte(`{"publisher":"eclipse","name":"sample-ext","version":"1.2.3"}`))
-	_ = zw.Close()
+	if a.ContentMeta == nil || a.ContentMeta.SizeBytes != 11 || !strings.HasPrefix(a.Digest, "sha256:") {
+		t.Fatalf("expected populated ContentMeta and Digest, got %+v", a)
+	}
 
-	input := &api.ArtifactInput{
-		Content:   buf.Bytes(),
-		Filename:  "sample-ext-1.2.3.vsix",
-		MediaType: "application/octet-stream",
-	}
-	if err := api.ValidateAndNormalizeArtifact(input, 1<<20); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if input.PURL != "pkg:vscode-extension/eclipse/sample-ext@1.2.3" {
-		t.Fatalf("got derived PURL %q, want pkg:vscode-extension/eclipse/sample-ext@1.2.3", input.PURL)
-	}
-	if input.Digest == nil || input.Digest.Algorithm != "sha256" || input.Digest.Value == "" {
-		t.Fatalf("expected calculated sha256 digest, got %+v", input.Digest)
-	}
-}
-
-func TestValidateAndNormalizeArtifact_RejectsEmptyAndOversized(t *testing.T) {
-	if err := api.ValidateAndNormalizeArtifact(&api.ArtifactInput{}, 100); err == nil {
-		t.Fatal("expected error for empty artifact input")
-	}
-	oversized := &api.ArtifactInput{Content: make([]byte, 101)}
-	if err := api.ValidateAndNormalizeArtifact(oversized, 100); err == nil {
+	// Oversized content must fail.
+	if _, err := ValidateAndNormalizeArtifact(ArtifactInput{Content: []byte("too-long")}, 4); err == nil {
 		t.Fatal("expected error when content exceeds maxBytes")
 	}
 }

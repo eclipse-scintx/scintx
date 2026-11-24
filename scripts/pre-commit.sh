@@ -19,31 +19,6 @@ if [[ -n "${unformatted}" ]]; then
   die "gofmt needed; run: make fmt  (or ./scripts/fmt.sh)"
 fi
 
-checksum_generated() {
-  mapfile -t generated < <(find extensions -path '*/all/all.go' | sort)
-  if [[ ${#generated[@]} -eq 0 ]]; then
-    printf 'empty\n'
-    return
-  fi
-  cat "${generated[@]}" | sha256sum | awk '{print $1}'
-}
-
-log "pre-commit: generate up to date"
-before="$(checksum_generated)"
-# Quiet-ish: still prints generate banners from generate.sh
-"${SCRIPTS_DIR}/generate.sh"
-after="$(checksum_generated)"
-if [[ "${before}" != "${after}" ]]; then
-  die "go generate changed files; run: make generate && git add extensions/*/all/all.go"
-fi
-
-# Second pass must be a no-op (idempotent generator).
-"${SCRIPTS_DIR}/generate.sh"
-after2="$(checksum_generated)"
-if [[ "${after}" != "${after2}" ]]; then
-  die "go generate is not idempotent"
-fi
-
 log "pre-commit: license headers"
 "${SCRIPTS_DIR}/headers.sh"
 

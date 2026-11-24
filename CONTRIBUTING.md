@@ -1,6 +1,6 @@
-# Contributing to SCINTX
+# Contributing to Eclipse SCINTX
 
-Thank you for your interest in contributing to SCINTX.
+Thank you for your interest in contributing to Eclipse SCINTX.
 
 ## Eclipse Contributor Agreement (ECA)
 

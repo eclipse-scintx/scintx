@@ -1,26 +1,10 @@
-# SCINTX Gateway default configuration (#65, #73)
-schemaVersion: "1"
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# SPDX-License-Identifier: EPL-2.0
 
+# Eclipse SCINTX Gateway Configuration
 gateway:
-  instanceId: gateway-001
-  version: 0.1.0
-  addr: ":8080"
-  defaultPolicy: baseline-security
-  policiesDir: ./policies
-  maxArtifactBytes: 104857600
-
-providers:
-  osv:
-    enabled: true
-    required: false
-    baseUrl: https://api.osv.dev
-    timeout: 15s
-    maxConcurrency: 20
-
-  ossindex:
-    enabled: true
-    required: false
-    baseUrl: https://ossindex.sonatype.org
-    timeout: 30s
-    maxConcurrency: 10
-    requireAuth: true
+  instanceId: "gateway-001"
+  version: "0.1.0"
+  listenAddr: ":8080"
+  maxContentBytes: 67108864

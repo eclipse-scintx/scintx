@@ -2,13 +2,12 @@
 //
 // SPDX-License-Identifier: EPL-2.0
 
-// Package server exposes the SCINTX Gateway HTTP API and health probes (#41, #66, #67, #68, #69).
+// Package server implements the Eclipse SCINTX HTTP gateway endpoints.
 package server
 
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -19,83 +18,63 @@ import (
 	"github.com/yeeth-security/scintx/internal/gateway"
 )
 
-// Server wraps the HTTP mux, gateway Store, Orchestrator, and lifecycle state.
+// Server wraps the HTTP mux, configuration, store, and orchestrator.
 type Server struct {
 	cfg          *config.Config
 	store        *gateway.Store
 	orchestrator *gateway.Orchestrator
 	httpServer   *http.Server
-	rootCtx      context.Context
-	rootCancel   context.CancelFunc
 	shuttingDown atomic.Bool
 }
 
-// New constructs a Server for the given gateway configuration, Store, and Orchestrator.
+// New creates a configured HTTP gateway Server.
 func New(cfg *config.Config, store *gateway.Store, orch *gateway.Orchestrator) *Server {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &Server{
+	s := &Server{
 		cfg:          cfg,
 		store:        store,
 		orchestrator: orch,
-		rootCtx:      ctx,
-		rootCancel:   cancel,
 	}
+	s.httpServer = &http.Server{
+		Addr:              cfg.Gateway.ListenAddr,
+		Handler:           s.Routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	return s
 }
 
-// Routes registers all SCINTX v1 endpoints and container health probes (#41, #67, #68).
+// Routes returns the HTTP handler with all gateway endpoints wired.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
-	// Container liveness and readiness probes (#41).
+	// Unauthenticated liveness and readiness probes.
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 
-	// Consumer and SDK submission lifecycle endpoints (#66, #67, #68, #69).
+	// Submission creation, validation, and status retrieval.
 	mux.HandleFunc("POST /v1/submissions", s.handleCreateSubmission)
 	mux.HandleFunc("GET /v1/submissions/{id}", s.handleGetSubmission)
-	mux.HandleFunc("GET /v1/submissions/{id}/aggregate-report", s.handleGetAggregateReport)
-	mux.HandleFunc("GET /v1/submissions/{id}/policy-report", s.handleGetPolicyReport)
 
-	// Gateway metadata inspection endpoints.
-	mux.HandleFunc("GET /v1/providers", s.handleListProviders)
-	mux.HandleFunc("GET /v1/policies", s.handleListPolicies)
-
-	return auth.Middleware(s.cfg.Gateway.BearerToken, mux)
+	return auth.Middleware(s.cfg.Auth.BearerToken, mux)
 }
 
-// Start begins listening on addr with hardened HTTP server timeouts.
-func (s *Server) Start(addr string) error {
-	s.httpServer = &http.Server{
-		Addr:              addr,
-		Handler:           s.Routes(),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       5 * time.Minute,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
+// Start begins listening and serving HTTP requests.
+func (s *Server) Start() error {
 	return s.httpServer.ListenAndServe()
 }
 
-// Shutdown marks readiness as false, stops accepting HTTP requests, and waits for in-flight runs.
+// Shutdown marks the server as not ready, drains HTTP connections, and waits
+// for in-flight submissions to finish.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.shuttingDown.Store(true)
-	var err error
-	if s.httpServer != nil {
-		err = s.httpServer.Shutdown(ctx)
-	}
-	if s.rootCancel != nil {
-		s.rootCancel()
-	}
+	err := s.httpServer.Shutdown(ctx)
 	s.orchestrator.Wait()
 	return err
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		slog.Default().Warn("failed to encode JSON response", "err", err)
-	}
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 func writeProblem(w http.ResponseWriter, status int, title, detail string) {
