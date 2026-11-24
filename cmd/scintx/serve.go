@@ -8,7 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -47,8 +47,11 @@ func runServe() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("scintx gateway %s (%s) listening on %s",
-			cfg.Gateway.InstanceID, cfg.Gateway.Version, cfg.Gateway.ListenAddr)
+		slog.Info("starting Eclipse SCINTX gateway",
+			"instanceId", cfg.Gateway.InstanceID,
+			"version", cfg.Gateway.Version,
+			"listenAddr", cfg.Gateway.ListenAddr,
+		)
 		if serveErr := srv.Start(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			errCh <- serveErr
 		}
@@ -59,7 +62,7 @@ func runServe() error {
 	case serveErr := <-errCh:
 		return serveErr
 	case <-ctx.Done():
-		log.Printf("shutting down scintx gateway...")
+		slog.Info("shutting down Eclipse SCINTX gateway", "instanceId", cfg.Gateway.InstanceID)
 		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return srv.Shutdown(shutCtx)

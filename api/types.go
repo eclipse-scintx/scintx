@@ -7,10 +7,16 @@ package api
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"mime"
 	"strings"
 )
+
+// ErrValidation is the sentinel error wrapped by all artifact input validation
+// failures so HTTP handlers can distinguish 422 validation errors from 500
+// storage failures.
+var ErrValidation = errors.New("validation failed")
 
 // SchemaVersionV1 is the current public Eclipse SCINTX payload schema version.
 const SchemaVersionV1 = "1"
@@ -45,8 +51,8 @@ type ArtifactInput struct {
 
 // ValidateAndNormalizeArtifact validates the submitted artifact fields and
 // enforces that exactly one artifact form (purl, digest, or content) is
-// supplied. It fails closed if zero or multiple artifact types are provided,
-// or if any untrusted metadata field (filename, mediaType) is malformed.
+// supplied. It fails closed wrapping ErrValidation if zero or multiple
+// artifact types are provided, or if any field is malformed.
 func ValidateAndNormalizeArtifact(in ArtifactInput, maxBytes int64) (ArtifactInput, error) {
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxContentBytes
@@ -70,17 +76,17 @@ func ValidateAndNormalizeArtifact(in ArtifactInput, maxBytes int64) (ArtifactInp
 		providedCount++
 	}
 	if providedCount != 1 {
-		return ArtifactInput{}, fmt.Errorf("artifact requires exactly one of purl, digest, or content")
+		return ArtifactInput{}, fmt.Errorf("%w: artifact requires exactly one of purl, digest, or content", ErrValidation)
 	}
 
 	if len(out.Content) == 0 && (out.Filename != "" || out.MediaType != "") {
-		return ArtifactInput{}, fmt.Errorf("filename and mediaType are only permitted with content uploads")
+		return ArtifactInput{}, fmt.Errorf("%w: filename and mediaType are only permitted with content uploads", ErrValidation)
 	}
 
 	if out.PURL != "" {
 		canonical, err := CanonicalPurl(out.PURL)
 		if err != nil {
-			return ArtifactInput{}, fmt.Errorf("invalid purl: %w", err)
+			return ArtifactInput{}, fmt.Errorf("%w: invalid purl: %w", ErrValidation, err)
 		}
 		out.PURL = canonical
 	}
@@ -93,7 +99,7 @@ func ValidateAndNormalizeArtifact(in ArtifactInput, maxBytes int64) (ArtifactInp
 
 	if len(out.Content) > 0 {
 		if int64(len(out.Content)) > maxBytes {
-			return ArtifactInput{}, fmt.Errorf("artifact content size %d exceeds maximum %d bytes", len(out.Content), maxBytes)
+			return ArtifactInput{}, fmt.Errorf("%w: artifact content size %d exceeds maximum %d bytes", ErrValidation, len(out.Content), maxBytes)
 		}
 		cleanFilename, err := ValidateFilename(out.Filename)
 		if err != nil {
@@ -132,15 +138,15 @@ func ValidateFilename(name string) (string, error) {
 		return "", nil
 	}
 	if len(name) > MaxFilenameLength {
-		return "", fmt.Errorf("invalid filename: exceeds maximum length of %d bytes", MaxFilenameLength)
+		return "", fmt.Errorf("%w: invalid filename: exceeds maximum length of %d bytes", ErrValidation, MaxFilenameLength)
 	}
 	if name == "." || name == ".." {
-		return "", fmt.Errorf("invalid filename %q", name)
+		return "", fmt.Errorf("%w: invalid filename %q", ErrValidation, name)
 	}
 	for i := 0; i < len(name); i++ {
 		c := name[i]
 		if c < 0x20 || c == 0x7f || c == '/' || c == '\\' {
-			return "", fmt.Errorf("invalid filename: contains forbidden character")
+			return "", fmt.Errorf("%w: invalid filename: contains forbidden character", ErrValidation)
 		}
 	}
 	return name, nil
@@ -154,17 +160,17 @@ func ValidateMediaType(mt string) (string, error) {
 		return "", nil
 	}
 	if len(mt) > MaxMediaTypeLength {
-		return "", fmt.Errorf("invalid mediaType: exceeds maximum length of %d bytes", MaxMediaTypeLength)
+		return "", fmt.Errorf("%w: invalid mediaType: exceeds maximum length of %d bytes", ErrValidation, MaxMediaTypeLength)
 	}
 	for i := 0; i < len(mt); i++ {
 		c := mt[i]
 		if c < 0x20 || c == 0x7f {
-			return "", fmt.Errorf("invalid mediaType: contains control character")
+			return "", fmt.Errorf("%w: invalid mediaType: contains control character", ErrValidation)
 		}
 	}
 	mediaType, _, err := mime.ParseMediaType(mt)
 	if err != nil || mediaType == "" {
-		return "", fmt.Errorf("invalid mediaType %q", mt)
+		return "", fmt.Errorf("%w: invalid mediaType %q", ErrValidation, mt)
 	}
 	return mediaType, nil
 }
@@ -174,7 +180,7 @@ func ValidateMediaType(mt string) (string, error) {
 func ValidateDigest(d string) error {
 	parts := strings.SplitN(strings.ToLower(strings.TrimSpace(d)), ":", 2)
 	if len(parts) != 2 {
-		return fmt.Errorf("invalid digest %q: expected <algorithm>:<hex>", d)
+		return fmt.Errorf("%w: invalid digest %q: expected <algorithm>:<hex>", ErrValidation, d)
 	}
 	alg, val := parts[0], parts[1]
 	var expectedLen int
@@ -186,13 +192,13 @@ func ValidateDigest(d string) error {
 	case "sha512":
 		expectedLen = 128
 	default:
-		return fmt.Errorf("unsupported digest algorithm %q", alg)
+		return fmt.Errorf("%w: unsupported digest algorithm %q", ErrValidation, alg)
 	}
 	if len(val) != expectedLen {
-		return fmt.Errorf("invalid %s digest length: got %d hex chars, want %d", alg, len(val), expectedLen)
+		return fmt.Errorf("%w: invalid %s digest length: got %d hex chars, want %d", ErrValidation, alg, len(val), expectedLen)
 	}
 	if _, err := hex.DecodeString(val); err != nil {
-		return fmt.Errorf("invalid digest hex in %q: %w", d, err)
+		return fmt.Errorf("%w: invalid digest hex in %q: %w", ErrValidation, d, err)
 	}
 	return nil
 }

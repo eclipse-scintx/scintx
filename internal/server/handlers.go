@@ -86,7 +86,11 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 
 	sub, err := s.orchestrator.Submit(r.Context(), req.Artifact)
 	if err != nil {
-		writeProblem(w, http.StatusUnprocessableEntity, "validation_failed", err.Error())
+		if errors.Is(err, api.ErrValidation) {
+			writeProblem(w, http.StatusUnprocessableEntity, "validation_failed", err.Error())
+			return
+		}
+		writeProblem(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
 	}
 
