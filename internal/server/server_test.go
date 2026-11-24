@@ -95,9 +95,9 @@ func TestMultipartSubmission(t *testing.T) {
 	srv, orch := newTestServer(t)
 	handler := srv.Routes()
 
+	// 1. Exclusive content upload succeeds (202 Accepted).
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
-	_ = mw.WriteField("purl", "pkg:npm/express@4.19.2")
 	fw, err := mw.CreateFormFile("content", "express.tgz")
 	if err != nil {
 		t.Fatal(err)
@@ -112,5 +112,25 @@ func TestMultipartSubmission(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected 202 for multipart upload, got %d: %s", rec.Code, rec.Body.String())
 	}
+
+	// 2. Providing both purl and content in multipart fails closed (422).
+	var bothBuf bytes.Buffer
+	mw2 := multipart.NewWriter(&bothBuf)
+	_ = mw2.WriteField("purl", "pkg:npm/express@4.19.2")
+	fw2, err := mw2.CreateFormFile("content", "express.tgz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = fw2.Write([]byte("sample-package-bytes"))
+	_ = mw2.Close()
+
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/submissions", &bothBuf)
+	req2.Header.Set("Content-Type", mw2.FormDataContentType())
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 when both purl and content are supplied, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
 	orch.Wait()
 }

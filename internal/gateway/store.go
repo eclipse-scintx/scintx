@@ -8,19 +8,26 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/yeeth-security/scintx/api"
 )
 
 // Store abstracts submission persistence across SQLite, PostgreSQL, and
-// in-memory test backends.
+// in-memory test backends. Implementations enforce valid submission state
+// transitions and fail closed on invalid transitions.
 type Store interface {
-	// PutSubmission inserts or updates a submission record.
+	// PutSubmission inserts a new submission or transitions an existing one.
 	PutSubmission(ctx context.Context, sub api.Submission) error
 	// GetSubmission retrieves a submission by ID.
 	GetSubmission(ctx context.Context, id string) (api.Submission, bool, error)
+	// FailIncompleteSubmissions marks any non-terminal ("accepted" or "running")
+	// submissions as "failed" during startup recovery so interrupted runs never
+	// remain stranded in an indeterminate state.
+	FailIncompleteSubmissions(ctx context.Context, reason string) error
 	// Ping verifies that the underlying storage backend is reachable.
 	Ping(ctx context.Context) error
 	// Close releases any underlying database connections.
@@ -31,8 +38,11 @@ type Store interface {
 // an in-memory store when dsn is "memory" or ":memory:".
 func OpenStore(dsn string) (Store, error) {
 	trimmed := strings.TrimSpace(dsn)
-	if trimmed == "" || strings.EqualFold(trimmed, "memory") || trimmed == ":memory:" {
+	if strings.EqualFold(trimmed, "memory") || trimmed == ":memory:" {
 		return NewMemoryStore(), nil
+	}
+	if trimmed == "" {
+		return nil, fmt.Errorf("storage DSN must not be empty")
 	}
 	return OpenSQLStore(trimmed)
 }
@@ -50,10 +60,22 @@ func NewMemoryStore() *MemoryStore {
 	}
 }
 
-// PutSubmission stores or updates a submission record in memory.
+// PutSubmission stores or updates a submission record in memory, enforcing the
+// submission state machine.
 func (s *MemoryStore) PutSubmission(_ context.Context, sub api.Submission) error {
+	if !sub.Status.IsValid() {
+		return fmt.Errorf("invalid submission status %q", sub.Status)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	prev, exists := s.submissions[sub.ID]
+	var from api.SubmissionStatus
+	if exists {
+		from = prev.Status
+	}
+	if !api.CanTransition(from, sub.Status) {
+		return fmt.Errorf("invalid submission state transition for %s: %q -> %q", sub.ID, from, sub.Status)
+	}
 	s.submissions[sub.ID] = sub
 	return nil
 }
@@ -64,6 +86,22 @@ func (s *MemoryStore) GetSubmission(_ context.Context, id string) (api.Submissio
 	defer s.mu.RUnlock()
 	sub, ok := s.submissions[id]
 	return sub, ok, nil
+}
+
+// FailIncompleteSubmissions transitions any non-terminal submissions to failed.
+func (s *MemoryStore) FailIncompleteSubmissions(_ context.Context, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	for id, sub := range s.submissions {
+		if !sub.Status.IsTerminal() {
+			if err := sub.TransitionTo(api.SubmissionFailed, reason, now); err != nil {
+				return err
+			}
+			s.submissions[id] = sub
+		}
+	}
+	return nil
 }
 
 // Ping always succeeds for an in-memory store.

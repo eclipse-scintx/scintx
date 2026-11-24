@@ -4,11 +4,7 @@
 package api
 
 import (
-	"archive/zip"
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"regexp"
 	"sort"
 	"strings"
@@ -128,43 +124,4 @@ func PurlVersion(purl string) (string, bool, error) {
 		return "", false, err
 	}
 	return p.Version, p.Version != "", nil
-}
-
-// extractVSIXPURL inspects a ZIP/VSIX archive for extension/package.json and builds
-// a pkg:vscode-extension/<publisher>/<name>@<version> PURL when present.
-func extractVSIXPURL(content []byte) string {
-	zr, err := zip.NewReader(bytes.NewReader(content), int64(len(content)))
-	if err != nil {
-		return ""
-	}
-	for _, f := range zr.File {
-		if f.Name != "extension/package.json" && f.Name != "package.json" {
-			continue
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return ""
-		}
-		data, err := io.ReadAll(io.LimitReader(rc, 1<<20))
-		_ = rc.Close()
-		if err != nil {
-			return ""
-		}
-		var manifest struct {
-			Publisher string `json:"publisher"`
-			Name      string `json:"name"`
-			Version   string `json:"version"`
-		}
-		if err := json.Unmarshal(data, &manifest); err != nil || manifest.Name == "" || manifest.Publisher == "" {
-			return ""
-		}
-		raw := fmt.Sprintf("pkg:vscode-extension/%s/%s", manifest.Publisher, manifest.Name)
-		if manifest.Version != "" {
-			raw += "@" + manifest.Version
-		}
-		if cp, err := CanonicalPurl(raw); err == nil {
-			return cp
-		}
-	}
-	return ""
 }

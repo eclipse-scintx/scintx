@@ -6,6 +6,7 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 )
 
 // Orchestrator accepts validated artifact submissions and manages their
-// lifecycle state in the configured persistent Store.
+// lifecycle state machine in the configured persistent Store.
 type Orchestrator struct {
 	cfg   *config.Config
 	store Store
@@ -30,7 +31,8 @@ func NewOrchestrator(cfg *config.Config, store Store) *Orchestrator {
 }
 
 // Submit validates an artifact, persists a Submission in "accepted" state,
-// and transitions it through "running" to "completed" asynchronously.
+// and transitions it through "running" to a terminal state ("completed" or
+// "failed") asynchronously.
 func (o *Orchestrator) Submit(ctx context.Context, artifact api.ArtifactInput) (api.Submission, error) {
 	normArtifact, err := api.ValidateAndNormalizeArtifact(artifact, o.cfg.Gateway.MaxContentBytes)
 	if err != nil {
@@ -41,9 +43,11 @@ func (o *Orchestrator) Submit(ctx context.Context, artifact api.ArtifactInput) (
 	sub := api.Submission{
 		SchemaVersion: api.SchemaVersionV1,
 		ID:            api.NewID("submission"),
-		Status:        api.SubmissionAccepted,
 		AcceptedAt:    now,
 		Artifact:      normArtifact,
+	}
+	if err := sub.TransitionTo(api.SubmissionAccepted, "", now); err != nil {
+		return api.Submission{}, err
 	}
 	if err := o.store.PutSubmission(ctx, sub); err != nil {
 		return api.Submission{}, err
@@ -63,13 +67,39 @@ func (o *Orchestrator) Wait() {
 	o.wg.Wait()
 }
 
-// ExecuteSubmission runs the submission lifecycle synchronously.
+// ExecuteSubmission drives the submission state machine from "accepted" to
+// "running" and then to "completed". If any step fails or panics, it fails
+// closed by transitioning the submission to "failed".
 func (o *Orchestrator) ExecuteSubmission(ctx context.Context, sub api.Submission) {
-	sub.Status = api.SubmissionRunning
-	_ = o.store.PutSubmission(ctx, sub)
+	defer func() {
+		if r := recover(); r != nil {
+			o.failSubmission(ctx, &sub, fmt.Sprintf("internal execution panic: %v", r))
+		}
+	}()
 
-	doneAt := time.Now().UTC()
-	sub.Status = api.SubmissionCompleted
-	sub.CompletedAt = &doneAt
-	_ = o.store.PutSubmission(ctx, sub)
+	if err := sub.TransitionTo(api.SubmissionRunning, "", time.Now().UTC()); err != nil {
+		o.failSubmission(ctx, &sub, err.Error())
+		return
+	}
+	if err := o.store.PutSubmission(ctx, sub); err != nil {
+		o.failSubmission(ctx, &sub, fmt.Sprintf("persist running state: %v", err))
+		return
+	}
+
+	if err := sub.TransitionTo(api.SubmissionCompleted, "", time.Now().UTC()); err != nil {
+		o.failSubmission(ctx, &sub, err.Error())
+		return
+	}
+	if err := o.store.PutSubmission(ctx, sub); err != nil {
+		o.failSubmission(ctx, &sub, fmt.Sprintf("persist completed state: %v", err))
+	}
+}
+
+func (o *Orchestrator) failSubmission(ctx context.Context, sub *api.Submission, reason string) {
+	if sub.Status.IsTerminal() {
+		return
+	}
+	if err := sub.TransitionTo(api.SubmissionFailed, reason, time.Now().UTC()); err == nil {
+		_ = o.store.PutSubmission(ctx, *sub)
+	}
 }

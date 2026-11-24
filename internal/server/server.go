@@ -18,28 +18,46 @@ import (
 	"github.com/yeeth-security/scintx/internal/gateway"
 )
 
-// Server wraps the HTTP mux, configuration, store, and orchestrator.
+// LifecycleState represents the explicit state machine of the HTTP gateway server:
+//
+//	StateReady -> StateDraining -> StateStopped
+type LifecycleState int32
+
+const (
+	StateReady    LifecycleState = 1
+	StateDraining LifecycleState = 2
+	StateStopped  LifecycleState = 3
+)
+
+// Server wraps the HTTP mux, configuration, store, orchestrator, and server
+// lifecycle state machine.
 type Server struct {
 	cfg          *config.Config
 	store        gateway.Store
 	orchestrator *gateway.Orchestrator
 	httpServer   *http.Server
-	shuttingDown atomic.Bool
+	state        atomic.Int32
 }
 
-// New creates a configured HTTP gateway Server.
+// New creates a configured HTTP gateway Server in StateReady.
 func New(cfg *config.Config, store gateway.Store, orch *gateway.Orchestrator) *Server {
 	s := &Server{
 		cfg:          cfg,
 		store:        store,
 		orchestrator: orch,
 	}
+	s.state.Store(int32(StateReady))
 	s.httpServer = &http.Server{
 		Addr:              cfg.Gateway.ListenAddr,
 		Handler:           s.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s
+}
+
+// State returns the current server lifecycle state.
+func (s *Server) State() LifecycleState {
+	return LifecycleState(s.state.Load())
 }
 
 // Routes returns the HTTP handler with all gateway endpoints wired.
@@ -62,13 +80,15 @@ func (s *Server) Start() error {
 	return s.httpServer.ListenAndServe()
 }
 
-// Shutdown marks the server as not ready, drains HTTP connections, waits for
-// in-flight submissions to finish, and closes the persistent store.
+// Shutdown transitions the server from StateReady to StateDraining, drains
+// HTTP connections, waits for in-flight submissions to finish, closes the
+// persistent store, and transitions to StateStopped.
 func (s *Server) Shutdown(ctx context.Context) error {
-	s.shuttingDown.Store(true)
+	s.state.Store(int32(StateDraining))
 	err := s.httpServer.Shutdown(ctx)
 	s.orchestrator.Wait()
 	_ = s.store.Close()
+	s.state.Store(int32(StateStopped))
 	return err
 }
 

@@ -39,14 +39,14 @@ type SQLStore struct {
 	postgres bool
 }
 
-// OpenSQLStore opens a SQLite or PostgreSQL database connection, configures
-// connection pooling/WAL settings, and ensures the schema exists.
+// OpenSQLStore opens a SQLite or PostgreSQL database connection, verifies
+// connectivity, configures connection pooling/WAL settings, ensures the schema
+// exists, and fails closed on any startup error.
 func OpenSQLStore(dsn string) (*SQLStore, error) {
 	lower := strings.ToLower(strings.TrimSpace(dsn))
 	isPostgres := strings.HasPrefix(lower, "postgres://") || strings.HasPrefix(lower, "postgresql://")
 
 	driver := "sqlite"
-	normalizedDSN := dsn
 	if isPostgres {
 		driver = "pgx"
 	} else {
@@ -55,13 +55,18 @@ func OpenSQLStore(dsn string) (*SQLStore, error) {
 		}
 	}
 
-	db, err := sql.Open(driver, normalizedDSN)
+	db, err := sql.Open(driver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open %s database: %w", driver, err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping %s database: %w", driver, err)
+	}
 
 	if !isPostgres {
 		// SQLite supports one writer at a time; enable WAL and busy_timeout.
@@ -77,17 +82,50 @@ func OpenSQLStore(dsn string) (*SQLStore, error) {
 		return nil, fmt.Errorf("initialize submissions schema: %w", err)
 	}
 
-	return &SQLStore{
+	store := &SQLStore{
 		db:       db,
 		postgres: isPostgres,
-	}, nil
+	}
+	if err := store.FailIncompleteSubmissions(ctx, "gateway restarted before submission completed"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("recover incomplete submissions: %w", err)
+	}
+
+	return store, nil
 }
 
-// PutSubmission upserts a submission record into SQLite or PostgreSQL.
+// PutSubmission inserts a new submission or applies a validated state
+// transition inside a transaction, failing closed on illegal state transitions.
 func (s *SQLStore) PutSubmission(ctx context.Context, sub api.Submission) error {
+	if !sub.Status.IsValid() {
+		return fmt.Errorf("invalid submission status %q", sub.Status)
+	}
+
 	payload, err := json.Marshal(sub)
 	if err != nil {
 		return fmt.Errorf("marshal submission %s: %w", sub.ID, err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	selectQuery := `SELECT status FROM submissions WHERE id = ?`
+	if s.postgres {
+		selectQuery = `SELECT status FROM submissions WHERE id = $1 FOR UPDATE`
+	}
+
+	var currentStatusStr string
+	err = tx.QueryRowContext(ctx, selectQuery, sub.ID).Scan(&currentStatusStr)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("check current status for %s: %w", sub.ID, err)
+	}
+
+	currentStatus := api.SubmissionStatus(currentStatusStr)
+	if !api.CanTransition(currentStatus, sub.Status) {
+		return fmt.Errorf("invalid submission state transition for %s: %q -> %q", sub.ID, currentStatus, sub.Status)
 	}
 
 	acceptedAt := sub.AcceptedAt.UTC().Format(time.RFC3339Nano)
@@ -99,7 +137,7 @@ func (s *SQLStore) PutSubmission(ctx context.Context, sub api.Submission) error 
 		}
 	}
 
-	query := `
+	upsertQuery := `
 INSERT INTO submissions (id, status, accepted_at, completed_at, payload_json)
 VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
@@ -109,7 +147,7 @@ ON CONFLICT(id) DO UPDATE SET
 	payload_json = excluded.payload_json
 `
 	if s.postgres {
-		query = `
+		upsertQuery = `
 INSERT INTO submissions (id, status, accepted_at, completed_at, payload_json)
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT(id) DO UPDATE SET
@@ -120,8 +158,10 @@ ON CONFLICT(id) DO UPDATE SET
 `
 	}
 
-	_, err = s.db.ExecContext(ctx, query, sub.ID, string(sub.Status), acceptedAt, completedAt, string(payload))
-	return err
+	if _, err := tx.ExecContext(ctx, upsertQuery, sub.ID, string(sub.Status), acceptedAt, completedAt, string(payload)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // GetSubmission retrieves a submission record by ID from SQLite or PostgreSQL.
@@ -145,6 +185,43 @@ func (s *SQLStore) GetSubmission(ctx context.Context, id string) (api.Submission
 		return api.Submission{}, false, fmt.Errorf("unmarshal submission %s: %w", id, err)
 	}
 	return sub, true, nil
+}
+
+// FailIncompleteSubmissions transitions any non-terminal ("accepted" or
+// "running") submissions to "failed" so interrupted runs fail closed on startup.
+func (s *SQLStore) FailIncompleteSubmissions(ctx context.Context, reason string) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT payload_json FROM submissions WHERE status IN ('accepted', 'running')`)
+	if err != nil {
+		return err
+	}
+	var pending []api.Submission
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		var sub api.Submission
+		if err := json.Unmarshal([]byte(payload), &sub); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		pending = append(pending, sub)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+	for _, sub := range pending {
+		if err := sub.TransitionTo(api.SubmissionFailed, reason, now); err != nil {
+			return err
+		}
+		if err := s.PutSubmission(ctx, sub); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Ping checks connectivity to the SQL database.

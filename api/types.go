@@ -26,7 +26,7 @@ type ContentMetadata struct {
 }
 
 // ArtifactInput represents the submitted artifact for evaluation.
-// At least one of PURL, Digest, or Content must be supplied.
+// Exactly one of PURL, Digest, or Content must be supplied (exclusive artifact types).
 type ArtifactInput struct {
 	PURL        string           `json:"purl,omitempty"`
 	Digest      string           `json:"digest,omitempty"`
@@ -36,9 +36,9 @@ type ArtifactInput struct {
 	ContentMeta *ContentMetadata `json:"content,omitempty"`
 }
 
-// ValidateAndNormalizeArtifact validates the submitted artifact fields,
-// canonicalizes any PURL, checks digest formatting, and computes SHA-256
-// metadata when raw content bytes are supplied.
+// ValidateAndNormalizeArtifact validates the submitted artifact fields and
+// enforces that exactly one artifact form (purl, digest, or content) is
+// supplied. It fails closed if zero or multiple artifact types are provided.
 func ValidateAndNormalizeArtifact(in ArtifactInput, maxBytes int64) (ArtifactInput, error) {
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxContentBytes
@@ -51,15 +51,18 @@ func ValidateAndNormalizeArtifact(in ArtifactInput, maxBytes int64) (ArtifactInp
 		MediaType: strings.TrimSpace(in.MediaType),
 	}
 
-	// If raw content is uploaded without a PURL, check if it is a .vsix package.
-	if out.PURL == "" && len(out.Content) > 0 && strings.HasSuffix(strings.ToLower(out.Filename), ".vsix") {
-		if extracted := extractVSIXPURL(out.Content); extracted != "" {
-			out.PURL = extracted
-		}
+	providedCount := 0
+	if out.PURL != "" {
+		providedCount++
 	}
-
-	if out.PURL == "" && out.Digest == "" && len(out.Content) == 0 {
-		return ArtifactInput{}, fmt.Errorf("artifact requires at least one of purl, digest, or content")
+	if out.Digest != "" {
+		providedCount++
+	}
+	if len(out.Content) > 0 {
+		providedCount++
+	}
+	if providedCount != 1 {
+		return ArtifactInput{}, fmt.Errorf("artifact requires exactly one of purl, digest, or content")
 	}
 
 	if out.PURL != "" {
@@ -80,13 +83,10 @@ func ValidateAndNormalizeArtifact(in ArtifactInput, maxBytes int64) (ArtifactInp
 		if int64(len(out.Content)) > maxBytes {
 			return ArtifactInput{}, fmt.Errorf("artifact content size %d exceeds maximum %d bytes", len(out.Content), maxBytes)
 		}
-		sum := sha256.Sum256(out.Content)
-		hexSum := hex.EncodeToString(sum[:])
-		if out.Digest == "" {
-			out.Digest = "sha256:" + hexSum
-		}
+		sum256 := sha256.Sum256(out.Content)
+		hex256 := hex.EncodeToString(sum256[:])
 		out.ContentMeta = &ContentMetadata{
-			SHA256:    hexSum,
+			SHA256:    hex256,
 			SizeBytes: int64(len(out.Content)),
 			Filename:  out.Filename,
 			MediaType: out.MediaType,

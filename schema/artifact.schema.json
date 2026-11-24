@@ -4,6 +4,8 @@
   "title": "ArtifactInput",
   "type": "object",
   "additionalProperties": false,
+  "minProperties": 1,
+  "maxProperties": 1,
   "properties": {
     "purl": {
       "type": "string",
@@ -35,7 +37,7 @@
       }
     }
   },
-  "anyOf": [
+  "oneOf": [
     { "required": ["purl"] },
     { "required": ["digest"] },
     { "required": ["content"] }

@@ -61,3 +61,23 @@ storage:
 		t.Fatal("expected non-empty config revision")
 	}
 }
+
+func TestLoadFailClosedOnUnknownFieldOrEmptySecretFile(t *testing.T) {
+	dir := t.TempDir()
+	badYAML := filepath.Join(dir, "bad.yaml")
+	if err := os.WriteFile(badYAML, []byte("gateway:\n  unknownSetting: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(badYAML); err == nil {
+		t.Fatal("expected Load to fail closed on unknown YAML field")
+	}
+
+	emptySecret := filepath.Join(dir, "empty.secret")
+	if err := os.WriteFile(emptySecret, []byte("   \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SCINTX_AUTH_BEARER_TOKEN_FILE", emptySecret)
+	if _, err := Load(""); err == nil {
+		t.Fatal("expected Load to fail closed on empty secret file")
+	}
+}

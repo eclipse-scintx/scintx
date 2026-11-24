@@ -7,6 +7,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -67,6 +68,9 @@ func Default() *Config {
 //  1. Environment variables / *_FILE secret files (highest precedence)
 //  2. Gateway configuration file (gateway.yaml)
 //  3. Built-in defaults (lowest precedence)
+//
+// Load fails closed if the config file contains unknown YAML fields, if a
+// configured *_FILE secret is unreadable or empty, or if validation fails.
 func Load(path string) (*Config, error) {
 	cfg := Default()
 
@@ -75,8 +79,12 @@ func Load(path string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read config file %q: %w", path, err)
 		}
-		if err := yaml.Unmarshal(data, cfg); err != nil {
-			return nil, fmt.Errorf("parse config file %q: %w", path, err)
+		if len(bytes.TrimSpace(data)) > 0 {
+			dec := yaml.NewDecoder(bytes.NewReader(data))
+			dec.KnownFields(true)
+			if err := dec.Decode(cfg); err != nil {
+				return nil, fmt.Errorf("parse config file %q: %w", path, err)
+			}
 		}
 	}
 
@@ -120,6 +128,8 @@ func applyEnvOverrides(cfg *Config) error {
 }
 
 // resolveSecret reads <ENV_NAME>_FILE if set, or falls back to <ENV_NAME>.
+// If <ENV_NAME>_FILE is explicitly configured, it fails closed when the file
+// cannot be read or contains only whitespace.
 func resolveSecret(envName string) (string, error) {
 	fileEnv := envName + "_FILE"
 	if filePath := strings.TrimSpace(os.Getenv(fileEnv)); filePath != "" {
@@ -127,13 +137,23 @@ func resolveSecret(envName string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read secret file %s=%q: %w", fileEnv, filePath, err)
 		}
-		return strings.TrimSpace(string(data)), nil
+		secret := strings.TrimSpace(string(data))
+		if secret == "" {
+			return "", fmt.Errorf("secret file %s=%q is empty", fileEnv, filePath)
+		}
+		return secret, nil
 	}
 	return strings.TrimSpace(os.Getenv(envName)), nil
 }
 
 // Validate checks structural configuration rules at startup.
 func (c *Config) Validate() error {
+	if strings.TrimSpace(c.Gateway.InstanceID) == "" {
+		return fmt.Errorf("gateway.instanceId is required")
+	}
+	if strings.TrimSpace(c.Gateway.Version) == "" {
+		return fmt.Errorf("gateway.version is required")
+	}
 	if strings.TrimSpace(c.Gateway.ListenAddr) == "" {
 		return fmt.Errorf("gateway.listenAddr is required")
 	}

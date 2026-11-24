@@ -6,6 +6,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"mime"
 	"net/http"
@@ -27,11 +28,11 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// handleReadyz is the readiness probe, verifying both server state and
-// persistent store connectivity.
+// handleReadyz is the readiness probe, verifying both server lifecycle state
+// and persistent store connectivity (failing closed on any error).
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
-	if s.shuttingDown.Load() {
-		writeProblem(w, http.StatusServiceUnavailable, "shutting_down", "gateway is shutting down")
+	if s.State() != StateReady {
+		writeProblem(w, http.StatusServiceUnavailable, "shutting_down", "gateway is not ready")
 		return
 	}
 	if err := s.store.Ping(r.Context()); err != nil {
@@ -45,20 +46,37 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCreateSubmission handles POST /v1/submissions for both JSON and
-// multipart/form-data requests.
+// multipart/form-data requests. It fails closed if the server is not in
+// StateReady, if the Content-Type is unsupported, or if parsing/validation fails.
 func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) {
-	ct := r.Header.Get("Content-Type")
-	mediaType, _, _ := mime.ParseMediaType(ct)
+	if s.State() != StateReady {
+		writeProblem(w, http.StatusServiceUnavailable, "shutting_down", "gateway is not accepting new submissions")
+		return
+	}
+
+	ct := strings.TrimSpace(r.Header.Get("Content-Type"))
+	mediaType := "application/json"
+	if ct != "" {
+		parsed, _, err := mime.ParseMediaType(ct)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "bad_request", "invalid Content-Type header")
+			return
+		}
+		mediaType = parsed
+	}
 
 	var (
 		req createSubmissionRequest
 		err error
 	)
-	switch {
-	case strings.HasPrefix(mediaType, "multipart/form-data"):
-		req, err = s.parseMultipartSubmission(r)
+	switch mediaType {
+	case "multipart/form-data":
+		req, err = s.parseMultipartSubmission(w, r)
+	case "application/json":
+		req, err = s.parseJSONSubmission(w, r)
 	default:
-		req, err = s.parseJSONSubmission(r)
+		writeProblem(w, http.StatusBadRequest, "bad_request", "unsupported Content-Type: expected application/json or multipart/form-data")
+		return
 	}
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -75,20 +93,26 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusAccepted, sub)
 }
 
-func (s *Server) parseJSONSubmission(r *http.Request) (createSubmissionRequest, error) {
+func (s *Server) parseJSONSubmission(w http.ResponseWriter, r *http.Request) (createSubmissionRequest, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	defer r.Body.Close()
+
 	var req createSubmissionRequest
-	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		return createSubmissionRequest{}, err
 	}
+	// Fail closed if trailing tokens exist after the first JSON object.
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return createSubmissionRequest{}, errors.New("unexpected trailing data after JSON object")
+	}
 	return req, nil
 }
 
-func (s *Server) parseMultipartSubmission(r *http.Request) (createSubmissionRequest, error) {
+func (s *Server) parseMultipartSubmission(w http.ResponseWriter, r *http.Request) (createSubmissionRequest, error) {
 	maxBytes := s.cfg.Gateway.MaxContentBytes
-	r.Body = http.MaxBytesReader(nil, r.Body, maxBytes+(1<<20))
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+(1<<20))
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		return createSubmissionRequest{}, err
 	}
@@ -99,6 +123,9 @@ func (s *Server) parseMultipartSubmission(r *http.Request) (createSubmissionRequ
 		},
 	}
 	file, header, err := r.FormFile("content")
+	if err != nil && !errors.Is(err, http.ErrMissingFile) {
+		return createSubmissionRequest{}, err
+	}
 	if err == nil {
 		defer file.Close()
 		data, readErr := io.ReadAll(file)

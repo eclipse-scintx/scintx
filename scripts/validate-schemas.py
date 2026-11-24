@@ -50,6 +50,12 @@ FIXTURES = [
         False,
     ),
     (
+        "artifact.schema.json",
+        "artifact multiple types (should fail)",
+        {"purl": "pkg:npm/lodash@4.17.20", "digest": "sha256:" + "a" * 64},
+        False,
+    ),
+    (
         "submission-create.schema.json",
         "submission-create request",
         {"artifact": {"purl": "pkg:npm/lodash@4.17.20"}},

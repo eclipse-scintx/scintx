@@ -13,12 +13,12 @@ import (
 	"github.com/yeeth-security/scintx/api"
 )
 
-func TestSQLStorePersistenceAcrossReopen(t *testing.T) {
+func TestSQLStorePersistenceAndStateMachine(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "nested", "scintx.db")
 	dsn := "file:" + filepath.ToSlash(dbPath)
 	ctx := context.Background()
 
-	// 1. Open store and write a submission.
+	// 1. Open store and write a submission through valid state transitions.
 	store1, err := OpenStore(dsn)
 	if err != nil {
 		t.Fatalf("OpenStore(1) failed: %v", err)
@@ -39,18 +39,43 @@ func TestSQLStorePersistenceAcrossReopen(t *testing.T) {
 		t.Fatalf("PutSubmission(accepted) failed: %v", err)
 	}
 
-	// Update submission to completed and close store (simulating restart).
-	doneAt := now.Add(25 * time.Millisecond)
-	sub.Status = api.SubmissionCompleted
-	sub.CompletedAt = &doneAt
+	// Skipping "running" (accepted -> completed directly) must fail closed.
+	invalidJump := sub
+	invalidJump.Status = api.SubmissionCompleted
+	if err := store1.PutSubmission(ctx, invalidJump); err == nil {
+		t.Fatal("expected PutSubmission to reject accepted -> completed transition")
+	}
+
+	// Transition accepted -> running -> completed.
+	if err := sub.TransitionTo(api.SubmissionRunning, "", now.Add(10*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store1.PutSubmission(ctx, sub); err != nil {
+		t.Fatalf("PutSubmission(running) failed: %v", err)
+	}
+	if err := sub.TransitionTo(api.SubmissionCompleted, "", now.Add(25*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
 	if err := store1.PutSubmission(ctx, sub); err != nil {
 		t.Fatalf("PutSubmission(completed) failed: %v", err)
+	}
+
+	// Also insert an interrupted submission left in "running" state before restart.
+	stranded := api.Submission{
+		SchemaVersion: api.SchemaVersionV1,
+		ID:            "submission-stranded-002",
+		Status:        api.SubmissionAccepted,
+		AcceptedAt:    now,
+		Artifact:      api.ArtifactInput{PURL: "pkg:npm/express@4.19.2"},
+	}
+	if err := store1.PutSubmission(ctx, stranded); err != nil {
+		t.Fatal(err)
 	}
 	if err := store1.Close(); err != nil {
 		t.Fatalf("Close(1) failed: %v", err)
 	}
 
-	// 2. Reopen store against the same SQLite file and verify persistence.
+	// 2. Reopen store: completed submission stays completed, stranded submission fails closed.
 	store2, err := OpenStore(dsn)
 	if err != nil {
 		t.Fatalf("OpenStore(2) failed: %v", err)
@@ -58,13 +83,18 @@ func TestSQLStorePersistenceAcrossReopen(t *testing.T) {
 	defer store2.Close()
 
 	loaded, ok, err := store2.GetSubmission(ctx, sub.ID)
-	if err != nil {
-		t.Fatalf("GetSubmission failed: %v", err)
+	if err != nil || !ok {
+		t.Fatalf("GetSubmission(completed) failed: %v, ok=%v", err, ok)
 	}
-	if !ok {
-		t.Fatal("expected submission to persist across store reopen")
+	if loaded.Status != api.SubmissionCompleted {
+		t.Fatalf("expected completed, got %q", loaded.Status)
 	}
-	if loaded.Status != api.SubmissionCompleted || loaded.Artifact.PURL != "pkg:npm/lodash@4.17.20" {
-		t.Fatalf("unexpected loaded submission: %+v", loaded)
+
+	recovered, ok, err := store2.GetSubmission(ctx, stranded.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetSubmission(stranded) failed: %v, ok=%v", err, ok)
+	}
+	if recovered.Status != api.SubmissionFailed || recovered.Error == "" {
+		t.Fatalf("expected stranded submission to fail closed on reopen, got %+v", recovered)
 	}
 }

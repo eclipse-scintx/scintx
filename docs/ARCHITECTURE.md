@@ -9,8 +9,8 @@ This document describes the initial containerized Eclipse SCINTX gateway.
 The initial gateway establishes the core HTTP entrypoint, artifact validation, persistent submission lifecycle (`SQLite` and `PostgreSQL`), configuration and secret loading, and container health probing:
 
 - **Artifact Validation (`api/types.go`, `api/purl.go`):**
-  - Accepts `purl` (canonicalized Package URL), cryptographic `digest` (`sha256`, `sha384`, `sha512`), or raw `content` bytes (`multipart/form-data`, including `.vsix` manifest PURL extraction).
-  - Rejects empty or malformed artifacts with `422 Unprocessable Entity` (`application/problem+json`).
+  - Accepts **exclusively one** artifact form per submission: `purl` (canonicalized Package URL), cryptographic `digest` (`sha256`, `sha384`, `sha512`), or raw `content` bytes (`multipart/form-data`).
+  - Rejects empty, malformed, or multi-type artifacts with `422 Unprocessable Entity` (`application/problem+json`).
 - **Submission Lifecycle & Persistent Storage (`internal/gateway/`):**
   - `POST /v1/submissions` creates a `Submission` (`schemaVersion: "1"`) in `accepted` state and transitions it through `running` to `completed`.
   - `GET /v1/submissions/{id}` returns the current submission status (`accepted`, `running`, `completed`, `failed`).
