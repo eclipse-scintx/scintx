@@ -2,112 +2,131 @@
 
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/yeeth-security/scintx/badge)](https://scorecard.dev/viewer/?uri=github.com/yeeth-security/scintx)
 
-> **S**upply **C**hain **INT**elligence E**X**change — a vendor-neutral open
-> standard for package-security integration.
-
-Eclipse SCINTX sits between package registries and security providers, defining a
-common submission API, normalized verdict vocabulary, policy engine, and signed
-webhook lifecycle. The goal is to eliminate duplicated integration work, make
-security verdicts portable, and let registries and enterprises mix-and-match
-providers without vendor lock-in.
+> **S**upply **C**hain **INT**elligence E**X**change — a reusable gateway, provider adapters, and SDKs connecting software registries and consumers with supply-chain security providers.
 
 ---
 
-## Why
+## Overview
 
-Security providers produce heterogeneous information — different schemas,
-different verdict vocabularies, different notions of severity and confidence.
-Meanwhile, registries and organizations need a portable way to consume that
-information and apply policy across it. Today every registry builds bespoke
-integrations with individual vendors, with no shared data model and no
-portability: a verdict from one provider cannot be compared with, substituted
-for, or combined with a verdict from another.
+Eclipse SCINTX provides a consistent way to submit software artifacts (`purl`, cryptographic `digest`, or raw `content` bytes) for security assessment and evaluate results against source-controlled policies:
 
-Eclipse SCINTX breaks that pattern by defining a vendor-neutral integration layer —
-normalizing provider output into a common verdict model and giving registries
-and organizations a single policy surface that works across any conforming
-provider. A verdict becomes portable, a policy becomes auditable, and a
-registry can swap or mix providers without rewriting its integration.
+1. **Orchestration:** Selects compatible provider adapters (`osv`, `ossindex`, etc.) based on the active policy's declared `capabilities` and the submitted artifact form.
+2. **Aggregation:** Combines normalized **Provider Reports** into an immutable **Aggregate Report** while preserving provider provenance, availability, and execution status (`completed`, `failed`, `timed_out`, `incomplete`).
+3. **Policy Evaluation:** Evaluates the Aggregate Report against the selected policy (`baseline-security`) to produce a **Policy Report** with a `satisfied`, `violated`, or `undetermined` verdict.
 
 ---
 
-## Scope
+## Quick Start (Local Binary)
 
-**Core**
-
-- An interoperability specification for package-security scanning, normalized
-  verdict/security model, provider interface, and policy model.
-- A reference implementation of the gateway and policy engine.
-- Reference adapters for major security providers.
-- HTTP integration for registries, CI, and feed bridges (e.g. package-feeds).
-
-**Out of scope**
-
-- Operating a public package registry.
-- In-process registry pollers (prefer external feeds → `POST /v1/submissions`).
-- Replacing existing security scanners — SCINTX *integrates* scanners, it does
-  not compete with them.
-- Commercial hosting or SaaS offerings — those may be offered independently by
-  ecosystem vendors.
-
----
-
-## Quickstart
-
-Requires [Go 1.26.10+](https://go.dev/dl/) (earlier versions lack the eMudhra CA distrust fix).
+Requires [Go 1.26.10+](https://go.dev/dl/).
 
 ```bash
-git clone https://github.com/yeeth-security/scintx.git
-cd scintx
 make build
-./bin/scintx
+./bin/scintx serve
 ```
 
-The gateway listens on `:8080`. With no `SCINTX_STORE` set it runs as an
-ephemeral forwarder (in-memory; state is gone on restart).
+Or run the self-contained deterministic demonstration (requires no live provider credentials or network access):
 
-Submit a package URL:
+```bash
+make demo
+```
+
+---
+
+## Container Build and Run
+
+Build the reproducible, non-root container image:
+
+```bash
+docker build -t scintx-gateway:m1 .
+```
+
+Run the container in deterministic demo mode (no live provider credentials required):
+
+```bash
+docker run --rm -p 8080:8080 -e SCINTX_DEMO_FIXTURES=1 scintx-gateway:m1
+```
+
+### Container Runtime and Filesystem Requirements
+
+- **Minimal runtime:** Built on `gcr.io/distroless/static-debian12:nonroot` with a statically linked Go binary (`/scintx`).
+- **Non-root execution:** Runs as UID/GID `65532:65532` (`nonroot`).
+- **Filesystem requirements:**
+  - `/scintx`: Read-only gateway executable.
+  - `/app/gateway.yaml` and `/app/policies/`: Read-only default gateway configuration and YAML policies. Operators may mount custom policies at `/etc/scintx/policies` and set `SCINTX_POLICIES_DIR=/etc/scintx/policies`.
+  - `/tmp`: Only used if a `multipart/form-data` upload exceeds the 32 MiB in-memory multipart buffer. The container supports `--read-only` root filesystems when `--tmpfs /tmp:rw,noexec,nosuid,size=128m` is provided.
+
+---
+
+## Liveness and Readiness Probes
+
+The gateway exposes HTTP health endpoints and a built-in CLI probe subcommand (`scintx health`) that works inside the distroless image without `curl` or a shell:
+
+- **Liveness (`GET /healthz`):** Returns `200 OK` (`{"status":"ok"}`) when the HTTP server process is alive.
+- **Readiness (`GET /readyz`):** Returns `200 OK` (`{"status":"ready"}`) when configuration and policies are loaded, the server is not shutting down, and all `required: true` providers are available. Returns `503 Service Unavailable` otherwise.
+- **Container probe command:** ` ["/scintx", "health"]` (wired as the `Dockerfile` `HEALTHCHECK`).
+
+---
+
+## Configuration and Credentials
+
+Gateway maintainers own configuration (`gateway.yaml`) and policies (`policies/*.yaml`). Values resolve in precedence order (highest to lowest):
+
+1. **Environment variables and mounted `*_FILE` secret files** (e.g., `SCINTX_OSSINDEX_TOKEN_FILE`, `SCINTX_OSSINDEX_TOKEN`, `SCINTX_OSV_BASE_URL`, `SCINTX_AUTH_BEARER_TOKEN`)
+2. **Gateway configuration file** (`gateway.yaml` or `SCINTX_CONFIG`)
+3. **Built-in defaults**
+
+If an optional provider (`required: false`) is missing credentials (such as `SCINTX_OSSINDEX_TOKEN`), the gateway starts normally and records that provider in the Aggregate Report with `available: false` and `reasons: ["missing_credentials"]`.
+
+---
+
+## Walkthrough: Submit, Poll Status, Reports, and Validation Error
+
+### 1. Submit a valid artifact (`POST /v1/submissions`)
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/v1/submissions \
   -H 'Content-Type: application/json' \
   -d '{
-    "schema_version": "1.0.0",
-    "artifact": {"purl": "pkg:npm/left-pad@1.3.0"},
-    "requested_capabilities": ["vulnerability"],
-    "policy_ref": "registry-default"
+    "artifact": { "purl": "pkg:npm/lodash@4.17.20" },
+    "policy": "baseline-security"
   }'
 ```
 
-Poll `GET /v1/submissions/{id}` until `status` is `completed`, then
-`GET /v1/submissions/{id}/results` (and `/merged` when several providers ran).
-
-**Live providers.** Default load is every registered factory. For OSV + Sonatype
-OSS Index:
+### 2. Poll submission status (`GET /v1/submissions/{id}`)
 
 ```bash
-./bin/scintx auth ossindex          # Guide PAT → OS keyring (not .env)
-SCINTX_PROVIDERS=osv,ossindex ./bin/scintx
+curl -sS http://127.0.0.1:8080/v1/submissions/<submission-id>
 ```
 
-Create a Guide PAT at https://guide.sonatype.com. CI should inject
-`SCINTX_OSSINDEX_TOKEN` from a secret store instead of `auth`.
+### 3. Retrieve Aggregate Report and Policy Report
 
-Useful targets: `make run`, `make test`, `make check`. Full env list:
-[`.env.example`](.env.example).
+```bash
+curl -sS http://127.0.0.1:8080/v1/submissions/<submission-id>/aggregate-report
+curl -sS http://127.0.0.1:8080/v1/submissions/<submission-id>/policy-report
+```
+
+### 4. Validation failure (`HTTP 422 Unprocessable Entity`)
+
+```bash
+curl -i -X POST http://127.0.0.1:8080/v1/submissions \
+  -H 'Content-Type: application/json' \
+  -d '{"artifact": {"purl": "invalid-purl"}}'
+```
+
+---
+
+## State Retention, Restart Behavior, and M1 Limitations
+
+- **In-memory state retention:** In Milestone 1, the gateway stores submissions, Aggregate Reports, Policy Reports, and raw evidence blobs in an in-memory store for the lifetime of the container process.
+- **Restart behavior:** Graceful shutdown (`SIGTERM` / `SIGINT`) stops admitting new requests and waits for in-flight provider runs to finish before exiting. All in-memory submission state is cleared on process or container restart; consumers polling a submission across a gateway restart receive `404 Not Found` and should resubmit.
+- **Initial deployment limitations:**
+  - Single-instance, in-memory state (no shared database or cross-restart persistence in M1).
+  - Policies and gateway configuration are loaded at startup; changes to `gateway.yaml` or `policies/*.yaml` take effect on process restart.
+  - Webhook push notifications and cross-submission batching are deferred to later milestones.
 
 ---
 
 ## License
 
 Distributed under the Eclipse Public License 2.0 (EPL-2.0).
-
-Changes: [CHANGELOG.md](CHANGELOG.md).
-
----
-
-## Architecture
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reference gateway
-design (ASD-STE100 style, with diagrams). Extensions:
-[docs/EXTENSIONS.md](docs/EXTENSIONS.md).

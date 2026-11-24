@@ -1,7 +1,7 @@
 # SCINTX developer entrypoints. Prefer `make <target>` or `./scripts/<name>.sh`.
 # Run `make help` for the list.
 
-.PHONY: help fmt vet test test-race stress generate build run schemas check tidy clean hooks
+.PHONY: help fmt vet test test-race generate build run demo schemas check tidy clean hooks
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make <target>\n\nTargets:\n"} \
@@ -19,22 +19,22 @@ test: ## Run go test ./...
 test-race: ## Run go test -race (falls back without CGO)
 	./scripts/test-race.sh
 
-stress: ## Stress worker/queue/store scalability (SCINTX_STRESS_SCALE=N)
-	./scripts/stress.sh
-
-generate: ## Regenerate extensions/*/all aggregators
+generate: ## Regenerate extensions/providers/all aggregator
 	./scripts/generate.sh
 
 build: ## Build bin/scintx
 	./scripts/build.sh
 
-run: ## Build and run the HTTP server
+run: ## Build and run the HTTP gateway server
 	./scripts/run.sh
+
+demo: ## Run deterministic offline demonstration (startup, submit, status, validation error)
+	./scripts/demo.sh
 
 schemas: ## Validate JSON Schema fixtures
 	./scripts/schemas.sh
 
-check: ## Local CI: fmt, generate drift, vet, race tests, schemas
+check: ## Local CI: fmt, headers, generate drift, vet, tests, schemas
 	./scripts/check.sh
 
 tidy: ## go mod tidy
