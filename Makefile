@@ -1,7 +1,7 @@
 # Eclipse SCINTX developer entrypoints. Prefer `make <target>` or `./scripts/<name>.sh`.
 # Run `make help` for the list.
 
-.PHONY: help fmt vet lint test test-race build run demo schemas check tidy clean hooks
+.PHONY: help fmt vet lint test test-race build run demo schemas check image-check tidy clean hooks
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make <target>\n\nTargets:\n"} \
@@ -36,6 +36,11 @@ schemas: ## Validate JSON Schema fixtures
 
 check: ## Local CI: fmt, headers, vet, lint, tests, schemas
 	./scripts/check.sh
+
+# Not part of "check": it needs Docker (or Podman) and an image build is slow.
+# CI runs it as its own job (see the "image" job in .github/workflows/ci.yml).
+image-check: ## Build the container image and wait until it reports healthy
+	./scripts/image-check.sh
 
 tidy: ## go mod tidy
 	./scripts/tidy.sh

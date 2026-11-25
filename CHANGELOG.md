@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `*_FILE` secret mounts).
 - JSON Schema 2020-12 documents (`schema/`), deterministic offline demo
   (`make demo`), and CI workflows.
+- CI now builds the container image, starts it, and waits until the image's
+  own `HEALTHCHECK` (`/scintx health`, run inside the container) reports
+  healthy. Before, nothing built the image, so a broken `Dockerfile` or
+  `.dockerignore` could not be seen. Run it locally with `make image-check`.
 - EPL-2.0 license.
 
 ### Security

@@ -73,3 +73,26 @@ jobs:
           CHECK_GENERATED=1 ./scripts/check.sh
       - name: Test coverage
         run: ./scripts/test-coverage.sh
+
+  # Builds the container image, starts it, and waits until the image's own
+  # HEALTHCHECK ("/scintx health", run inside the container) reports healthy.
+  #
+  # Why a separate job: the "test" job above runs the gateway as a plain
+  # program, so it cannot see a broken Dockerfile, a Go package missing from
+  # .dockerignore, or a probe that does not work inside the image. This job
+  # can. It runs next to "test", so it does not make the pipeline slower.
+  #
+  # It needs no extra action: Docker is already installed on the runner. It
+  # needs no secrets and pushes nothing. The image is thrown away with the job.
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # Pin to commit SHA (tags are mutable). Dependabot updates these.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the image and wait until it reports healthy
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/image-check.sh

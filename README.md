@@ -43,6 +43,8 @@ Run the container with a mounted `/data` volume for persistent SQLite storage:
 docker run --rm -p 8080:8080 -v scintx-data:/data scintx-gateway:latest
 ```
 
+To check that the image builds, starts, and reports healthy, run `make image-check`. CI runs the same check on every pull request.
+
 ### Container Runtime and Filesystem Requirements
 
 - **Minimal runtime:** Built on `gcr.io/distroless/static-debian12:nonroot` with a statically linked Go binary (`/scintx`).
