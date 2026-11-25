@@ -1,0 +1,79 @@
+name: General issue
+description: Report a bug, suggest an enhancement, or raise a documentation or design question.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search [existing issues](https://github.com/eclipse-scintx/scintx/issues) before submitting.
+        For new provider integrations, use the Provider Adapter Request template.
+        Report suspected vulnerabilities privately using the [security policy](https://github.com/eclipse-scintx/scintx/blob/main/.github/SECURITY.md).
+        Keep credentials, customer data, private artifacts, and non-public findings out of this issue.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Issue type
+      options:
+        - Bug report
+        - Feature request or enhancement
+        - Documentation
+        - Design discussion or question
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected area
+      description: Select relevant areas, if known.
+      multiple: true
+      options:
+        - Gateway / API
+        - Provider adapters
+        - Policy engine
+        - Schemas / specification
+        - SDK / integration
+        - Documentation
+        - Build / CI / tooling
+        - Other / unsure
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description and context
+      description: Describe the problem, use case, or question and why it matters. For bugs, include what actually happened.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior or proposed change
+      description: For bugs, describe what you expected to happen. For enhancements, describe the desired outcome and any suggested approach.
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce and environment
+      description: For bugs, include the SCINTX version or commit, deployment method, OS, affected provider or SDK, and minimal reproduction steps, as applicable.
+      placeholder: |
+        Version / commit:
+        Environment:
+        Steps to reproduce:
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Supporting evidence and references
+      description: Include sanitized logs, errors, request/response samples, screenshots, related issues, or links to relevant specifications, if available.
+
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched for existing issues.
+          required: true
+        - label: This issue contains no secrets, customer data, private artifacts, or non-public security findings.
+          required: true
