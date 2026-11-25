@@ -82,7 +82,10 @@ func (o *Orchestrator) ExecuteClaimedSubmission(ctx context.Context, sub api.Sub
 	}()
 
 	var hookErr error
-	if o.execHook != nil {
+	switch {
+	case len(o.adapters) > 0:
+		hookErr = o.evaluateAdapters(execCtx, &sub)
+	case o.execHook != nil:
 		// Attach OpenContent to a copy of the submission so provider adapters
 		// can stream uploaded bytes via sub.Artifact.OpenContent() (#70).
 		hookSub := sub
@@ -93,7 +96,7 @@ func (o *Orchestrator) ExecuteClaimedSubmission(ctx context.Context, sub api.Sub
 			}
 		}
 		hookErr = o.execHook(execCtx, hookSub)
-	} else {
+	default:
 		// Nothing can scan this artifact. Fail closed (see ErrNoExecutor).
 		hookErr = ErrNoExecutor
 	}

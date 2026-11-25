@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/eclipse-scintx/scintx/adapter/osv"
 	"github.com/eclipse-scintx/scintx/internal/blob"
 	"github.com/eclipse-scintx/scintx/internal/config"
 	"github.com/eclipse-scintx/scintx/internal/gateway"
@@ -67,7 +68,11 @@ func runServe() error {
 		return fmt.Errorf("open blob storage %q: %w", cfg.Storage.BlobDir, err)
 	}
 
-	orch := gateway.NewOrchestratorWithBlobs(cfg, store, blobs)
+	osvAdapter := osv.NewAdapter(osv.Config{
+		BaseURL:     os.Getenv("SCINTX_OSV_BASE_URL"),
+		BearerToken: os.Getenv("SCINTX_OSV_BEARER_TOKEN"),
+	}, nil)
+	orch := gateway.NewOrchestratorWithAdapters(cfg, store, blobs, osvAdapter)
 	srv := server.New(cfg, store, orch)
 	warnAboutRiskyDefaults(cfg, orch)
 

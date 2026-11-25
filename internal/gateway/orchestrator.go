@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eclipse-scintx/scintx/adapter"
 	"github.com/eclipse-scintx/scintx/api"
 	"github.com/eclipse-scintx/scintx/internal/blob"
 	"github.com/eclipse-scintx/scintx/internal/config"
@@ -32,34 +33,30 @@ type Orchestrator struct {
 	retryBackoff time.Duration
 	// execHook runs one claimed submission. It must return nil only when the
 	// work really finished, and an error in every other case (including when
-	// its context is canceled). A nil hook means no provider adapters are
-	// wired in yet. Then every submission fails closed (see ErrNoExecutor).
-	// Before, it completed without being scanned.
+	// its context is canceled). A nil hook and empty adapters slice means no
+	// provider adapters are wired in yet, so every submission fails closed.
 	execHook func(ctx context.Context, sub api.Submission) error
+	adapters []adapter.ProviderAdapter
 	// blobs holds the bytes of uploaded content until its submission is
 	// finished (see content.go). Nil means content uploads are disabled.
-	blobs blob.Store
-	// These three settings drive the blob sweeper (see blob_sweep.go).
+	blobs          blob.Store
 	sweepInterval  time.Duration
 	orphanGrace    time.Duration
 	staleUploadAge time.Duration
 
-	workerCtx    context.Context
-	cancelWorker context.CancelFunc
-	wakeCh       chan struct{}
-	idleNotify   chan struct{}
-	stopCh       chan struct{}
-	stopOnce     sync.Once
-	wg           sync.WaitGroup
-	inFlight     atomic.Int32
-	// lastClaimErrLog is when a claim error was last logged (Unix nanoseconds).
-	// It limits the log to one line every few seconds during a storage outage.
+	workerCtx       context.Context
+	cancelWorker    context.CancelFunc
+	wakeCh          chan struct{}
+	idleNotify      chan struct{}
+	stopCh          chan struct{}
+	stopOnce        sync.Once
+	wg              sync.WaitGroup
+	inFlight        atomic.Int32
 	lastClaimErrLog atomic.Int64
 }
 
-// HasExecutor reports whether an execution hook is installed. The serve
-// command uses it to warn that every submission fails closed without one.
-func (o *Orchestrator) HasExecutor() bool { return o.execHook != nil }
+// HasExecutor reports whether an execution hook or provider adapter is installed.
+func (o *Orchestrator) HasExecutor() bool { return o.execHook != nil || len(o.adapters) > 0 }
 
 // orchestratorOption adjusts an Orchestrator before its workers start.
 // Tests use it to shorten leases or install an execution hook.

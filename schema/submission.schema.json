@@ -37,6 +37,13 @@
     "artifact": {
       "$ref": "artifact.schema.json"
     },
+    "reports": {
+      "description": "Normalized provider adapter evaluation reports produced for this submission.",
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
     "error": {
       "type": "string"
     }

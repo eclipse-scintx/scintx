@@ -5,6 +5,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -76,11 +77,12 @@ type Submission struct {
 	// Interruptions counts attempts that a graceful gateway shutdown cut
 	// short. Those attempts were not the submission's fault, so they do not
 	// count toward the attempt cap (see AttemptsExhausted).
-	Interruptions int           `json:"interruptions,omitempty"`
-	AcceptedAt    time.Time     `json:"acceptedAt"`
-	CompletedAt   *time.Time    `json:"completedAt,omitempty"`
-	Artifact      ArtifactInput `json:"artifact"`
-	Error         string        `json:"error,omitempty"`
+	Interruptions int               `json:"interruptions,omitempty"`
+	AcceptedAt    time.Time         `json:"acceptedAt"`
+	CompletedAt   *time.Time        `json:"completedAt,omitempty"`
+	Artifact      ArtifactInput     `json:"artifact"`
+	Reports       []json.RawMessage `json:"reports,omitempty"`
+	Error         string            `json:"error,omitempty"`
 }
 
 // AttemptsExhausted reports whether the submission has used up its attempt
