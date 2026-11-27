@@ -8,7 +8,7 @@
 # (see the "docker" entry in .github/dependabot.yml).
 
 # Stage 1: Reproducible static binary build.
-FROM golang:1.26.10-bookworm@sha256:5de7c99eb78ca5e515a4c340235d0955ec5964a5071c492c15503d7c267da473 AS builder
+FROM golang:1.27.3-bookworm@sha256:dc0963f32053e4bc451d24d87e3892d42d01021b61f093e98eb95c0352bb84b0 AS builder
 
 # The target OS and CPU type. BuildKit and Podman fill these in from
 # "--platform" (for example linux/arm64). They are empty with older builders,
