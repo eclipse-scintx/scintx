@@ -17,6 +17,24 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18-alpine@sha256:0115267ab5a509022df9319c77be365cef335adb71556c75f60f5360ee247e71
+        env:
+          # "trust" means no password. That is fine here: the database is
+          # empty, lives only for this job, and is only reachable from it.
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: scintx_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # The PostgreSQL tests in internal/gateway are skipped unless this is set.
+      SCINTX_TEST_POSTGRES_URL: postgres://postgres@127.0.0.1:5432/scintx_test?sslmode=disable
     steps:
       # Pin to commit SHA (tags are mutable). Dependabot updates these.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,10 +51,19 @@ jobs:
       - name: Install golangci-lint
         run: |
           # SHA-256 verified tarball — version-pinned, tag URLs are mutable.
+          #
+          # The version must be new enough for the Go version in go.mod.
+          # golangci-lint only checks a module whose Go version is not newer
+          # than the Go it was built with. The old pin, v2.2.1, is older than
+          # golangci-lint's Go 1.26 support (that came in v2.9.0), and go.mod
+          # says go 1.26. Nobody saw this, because no script ran the linter.
+          # scripts/check.sh now runs it (scripts/lint.sh), so the pin moved
+          # to v2.15.0. When go.mod moves to a newer Go, raise this pin too,
+          # and change the version (twice) and the checksum together.
           curl --fail --silent --show-error --location \
-            "https://github.com/golangci/golangci-lint/releases/download/v2.2.1/golangci-lint-2.2.1-linux-amd64.tar.gz" \
+            "https://github.com/golangci/golangci-lint/releases/download/v2.15.0/golangci-lint-2.15.0-linux-amd64.tar.gz" \
             -o /tmp/golangci.tgz
-          echo "4098436776a4f4bbef25dcad93f56533003d085f9133e4c69ba3145973d211dc  /tmp/golangci.tgz" | sha256sum --check -
+          echo "9b7fe6a6bf6334b98decf8d86b11415ea7889afdabdd1959fdce23af2a9ebcea  /tmp/golangci.tgz" | sha256sum --check -
           mkdir -p /tmp/gcl-bin
           tar -xzf /tmp/golangci.tgz -C /tmp/gcl-bin --strip-components=1
           sudo mv /tmp/gcl-bin/golangci-lint /usr/local/bin/
@@ -46,3 +73,26 @@ jobs:
           CHECK_GENERATED=1 ./scripts/check.sh
       - name: Test coverage
         run: ./scripts/test-coverage.sh
+
+  # Builds the container image, starts it, and waits until the image's own
+  # HEALTHCHECK ("/scintx health", run inside the container) reports healthy.
+  #
+  # Why a separate job: the "test" job above runs the gateway as a plain
+  # program, so it cannot see a broken Dockerfile, a Go package missing from
+  # .dockerignore, or a probe that does not work inside the image. This job
+  # can. It runs next to "test", so it does not make the pipeline slower.
+  #
+  # It needs no extra action: Docker is already installed on the runner. It
+  # needs no secrets and pushes nothing. The image is thrown away with the job.
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # Pin to commit SHA (tags are mutable). Dependabot updates these.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the image and wait until it reports healthy
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/image-check.sh

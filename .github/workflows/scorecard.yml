@@ -1,5 +1,5 @@
 # OpenSSF Scorecard: automated security posture assessment.
-# Public results: https://scorecard.dev/viewer/?uri=github.com/yeeth-security/scintx
+# Public results: https://scorecard.dev/viewer/?uri=github.com/eclipse-scintx/scintx
 # Badge in README shows the current posture per the Eclipse Security Handbook
 # Rapid Security Review (CI/CD: Scorecard awareness).
 name: Scorecard

@@ -1,45 +1,44 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://scintx.example/schemas/2020-12/submission.schema.json",
+  "$id": "https://scintx.example/schema/submission.schema.json",
   "title": "Submission",
-  "description": "The orchestration aggregate for a security analysis. Server-generated fields (id, status, result_ids, decision_id, timestamps) are response-only.",
   "type": "object",
-  "required": ["id", "schema_version", "artifact", "status", "created_at", "result_ids", "decision_id"],
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "status", "acceptedAt", "artifact"],
   "properties": {
+    "schemaVersion": {
+      "const": "1"
+    },
     "id": {
       "type": "string",
-      "description": "Opaque globally unique submission identifier."
+      "pattern": "^submission-[0-9a-f]{32}$"
     },
-    "schema_version": {
-      "type": "string",
-      "pattern": "^\\d+\\.\\d+\\.\\d+$"
-    },
-    "artifact": {"$ref": "artifact.schema.json"},
-    "requested_capabilities": {
-      "type": "array",
-      "items": {"type": "string"}
-    },
-    "provider_selectors": {"type": "object"},
-    "policy_ref": {"type": "string"},
     "status": {
       "type": "string",
-      "enum": ["accepted", "running", "completed", "failed", "deferred"]
+      "enum": ["accepted", "running", "completed", "failed"]
     },
-    "completion_reason": {
+    "attempts": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "interruptions": {
+      "description": "Attempts cut short by a graceful gateway shutdown. They do not count toward the attempt cap.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "acceptedAt": {
       "type": "string",
-      "enum": ["decision_produced", "findings_only", "deferred", "failed", "all_providers_ineligible"]
+      "format": "date-time"
     },
-    "created_at": {"type": "string", "format": "date-time"},
-    "completed_at": {"type": "string", "format": "date-time"},
-    "result_ids": {
-      "type": "array",
-      "items": {"type": "string"}
+    "completedAt": {
+      "type": "string",
+      "format": "date-time"
     },
-    "decision_id": {
-      "type": ["string", "null"]
+    "artifact": {
+      "$ref": "artifact.schema.json"
     },
-    "resume_at": {"type": "string", "format": "date-time"},
-    "extensions": {"type": "object"}
-  },
-  "additionalProperties": false
+    "error": {
+      "type": "string"
+    }
+  }
 }

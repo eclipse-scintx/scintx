@@ -10,11 +10,23 @@ import (
 	"strings"
 )
 
+// MaxPurlLength caps the total byte length of a submitted Package URL.
+const MaxPurlLength = 2048
+
+// namespaceLowerTypes are the ecosystems whose spec says the namespace and
+// name are not case sensitive and must be stored in lower case. github was
+// missing, so pkg:github/Org/Repo and pkg:github/org/repo did not match.
 var namespaceLowerTypes = map[string]bool{
-	"pypi": true, "npm": true, "gem": true, "composer": true, "golang": true,
+	"bitbucket": true, "composer": true, "deb": true, "gem": true,
+	"github": true, "golang": true, "hex": true, "npm": true,
+	"pypi": true, "rpm": true,
 }
 
-var purlRe = regexp.MustCompile(`^pkg:([^/#?]+)((?:/[^?#]*)?)(([?#].*)?)$`)
+var (
+	purlRe         = regexp.MustCompile(`^pkg:([^/#?]+)((?:/[^?#]*)?)(([?#].*)?)$`)
+	purlTypeRe     = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9.+-]*$`)
+	qualifierKeyRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9._-]*$`)
+)
 
 type parsedPurl struct {
 	Type       string
@@ -23,99 +35,118 @@ type parsedPurl struct {
 	Version    string
 	Qualifiers map[string]string
 	Subpath    string
-	Hash       string
+}
+
+func hasControlOrSpace(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c <= 0x20 || c == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func parsePurl(purl string) (*parsedPurl, error) {
+	if len(purl) == 0 || len(purl) > MaxPurlLength {
+		return nil, fmt.Errorf("invalid purl length: %d", len(purl))
+	}
+	if hasControlOrSpace(purl) {
+		return nil, fmt.Errorf("invalid purl: contains whitespace or control characters")
+	}
+
 	m := purlRe.FindStringSubmatch(purl)
 	if m == nil {
 		return nil, fmt.Errorf("invalid purl: %s", purl)
 	}
-	typ := strings.ToLower(m[1])
+	rawType := m[1]
+	if !purlTypeRe.MatchString(rawType) {
+		return nil, fmt.Errorf("invalid purl type: %q", rawType)
+	}
+	typ := strings.ToLower(rawType)
 	rest := m[2]
 	tail := m[3]
 
 	p := &parsedPurl{Type: typ, Qualifiers: map[string]string{}}
-
 	if len(rest) > 0 {
 		body := rest[1:]
-		slashIdx := strings.Index(body, "/")
-		if slashIdx >= 0 {
-			p.Namespace = body[:slashIdx]
-			p.Name = body[slashIdx+1:]
+		if lastSlash := strings.LastIndex(body, "/"); lastSlash >= 0 {
+			p.Namespace = body[:lastSlash]
+			p.Name = body[lastSlash+1:]
 		} else {
 			p.Name = body
 		}
 	}
 
-	if v, ok := extractVersion(p.Name); ok {
-		p.Version = v
+	if idx := strings.Index(p.Name, "@"); idx >= 0 {
+		p.Version = p.Name[idx+1:]
+		p.Name = p.Name[:idx]
+		// An unencoded "@" inside the version is a second separator. The
+		// encoded form %40 is fine and is decoded below.
+		if p.Version == "" || strings.Contains(p.Version, "@") {
+			return nil, fmt.Errorf("invalid purl version in %s", purl)
+		}
 	}
-	p.Name = stripVersion(p.Name)
+	// Decode, reject "." and ".." (including the encoded form %2e%2e), then
+	// re-encode. The raw string checks above cannot see a segment that is
+	// still percent-encoded.
+	lower := namespaceLowerTypes[typ]
+	var err error
+	if p.Namespace, err = normalizePurlPath(p.Namespace, "namespace", lower); err != nil {
+		return nil, err
+	}
+	if p.Name, err = normalizePurlPath(p.Name, "name", lower); err != nil {
+		return nil, err
+	}
+	if p.Name == "" || strings.Contains(p.Name, "/") {
+		return nil, fmt.Errorf("invalid purl package coordinates in %s", purl)
+	}
+	if p.Version, err = normalizePurlToken(p.Version, "version"); err != nil {
+		return nil, err
+	}
 
-	if len(tail) > 0 {
-		if tail[0] == '?' {
-			body := tail[1:]
-			var hashSub string
-			if idx := strings.Index(body, "#"); idx >= 0 {
-				hashSub = body[idx+1:]
-				body = body[:idx]
+	if len(tail) > 0 && tail[0] == '?' {
+		body := tail[1:]
+		if idx := strings.Index(body, "#"); idx >= 0 {
+			p.Subpath = body[idx+1:]
+			body = body[:idx]
+		}
+		if body == "" {
+			return nil, fmt.Errorf("invalid purl: empty qualifiers")
+		}
+		for _, kv := range strings.Split(body, "&") {
+			eq := strings.Index(kv, "=")
+			if eq <= 0 || eq == len(kv)-1 {
+				return nil, fmt.Errorf("invalid purl qualifier %q", kv)
 			}
-			for _, kv := range strings.Split(body, "&") {
-				if kv == "" {
-					continue
-				}
-				eq := strings.Index(kv, "=")
-				if eq < 0 {
-					continue
-				}
-				p.Qualifiers[strings.ToLower(kv[:eq])] = kv[eq+1:]
+			k := strings.ToLower(kv[:eq])
+			v := kv[eq+1:]
+			if !qualifierKeyRe.MatchString(k) || strings.Contains(v, "=") {
+				return nil, fmt.Errorf("invalid purl qualifier %q", kv)
 			}
-			if hashSub != "" {
-				slashIdx := strings.Index(hashSub, "/")
-				if slashIdx >= 0 {
-					p.Hash = hashSub[:slashIdx]
-					p.Subpath = hashSub[slashIdx:]
-				} else {
-					p.Hash = hashSub
-				}
+			decoded, err := normalizePurlToken(v, "qualifier")
+			if err != nil {
+				return nil, err
 			}
-		} else if tail[0] == '#' {
-			body := tail[1:]
-			slashIdx := strings.Index(body, "/")
-			if slashIdx >= 0 {
-				p.Hash = body[:slashIdx]
-				p.Subpath = body[slashIdx:]
-			} else {
-				p.Hash = body
+			if _, exists := p.Qualifiers[k]; exists {
+				return nil, fmt.Errorf("duplicate purl qualifier %q", k)
 			}
+			p.Qualifiers[k] = decoded
+		}
+	} else if len(tail) > 0 && tail[0] == '#' {
+		p.Subpath = tail[1:]
+		if p.Subpath == "" {
+			return nil, fmt.Errorf("invalid purl: empty subpath")
 		}
 	}
 
-	if namespaceLowerTypes[typ] {
-		p.Namespace = strings.ToLower(p.Namespace)
-		p.Name = strings.ToLower(p.Name)
+	if p.Subpath, err = normalizePurlPath(p.Subpath, "subpath", false); err != nil {
+		return nil, err
 	}
-	p.Subpath = strings.TrimRight(p.Subpath, "/")
 	return p, nil
 }
 
-func extractVersion(s string) (string, bool) {
-	idx := strings.Index(s, "@")
-	if idx < 0 {
-		return "", false
-	}
-	return s[idx+1:], true
-}
-
-func stripVersion(s string) string {
-	idx := strings.Index(s, "@")
-	if idx < 0 {
-		return s
-	}
-	return s[:idx]
-}
-
+// CanonicalPurl validates and normalizes a Package URL string.
 func CanonicalPurl(purl string) (string, error) {
 	p, err := parsePurl(purl)
 	if err != nil {
@@ -136,21 +167,19 @@ func CanonicalPurl(purl string) (string, error) {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		var qs []string
+		qs := make([]string, 0, len(keys))
 		for _, k := range keys {
 			qs = append(qs, fmt.Sprintf("%s=%s", k, p.Qualifiers[k]))
 		}
 		fmt.Fprintf(&b, "?%s", strings.Join(qs, "&"))
 	}
-	if p.Hash != "" {
-		fmt.Fprintf(&b, "#%s", p.Hash)
-	}
 	if p.Subpath != "" {
-		fmt.Fprintf(&b, "%s", p.Subpath)
+		fmt.Fprintf(&b, "#%s", p.Subpath)
 	}
 	return b.String(), nil
 }
 
+// PurlType returns the lowercase ecosystem type of a Package URL.
 func PurlType(purl string) (string, error) {
 	p, err := parsePurl(purl)
 	if err != nil {
@@ -159,21 +188,11 @@ func PurlType(purl string) (string, error) {
 	return p.Type, nil
 }
 
-func PurlName(purl string) (string, error) {
-	p, err := parsePurl(purl)
-	if err != nil {
-		return "", err
-	}
-	return p.Name, nil
-}
-
+// PurlVersion returns the version component of a Package URL and whether it is present.
 func PurlVersion(purl string) (string, bool, error) {
 	p, err := parsePurl(purl)
 	if err != nil {
 		return "", false, err
 	}
-	if p.Version == "" {
-		return "", false, nil
-	}
-	return p.Version, true, nil
+	return p.Version, p.Version != "", nil
 }

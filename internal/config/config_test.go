@@ -1,0 +1,138 @@
+// Copyright (c) 2026 Contributors to the Eclipse Foundation
+//
+// SPDX-License-Identifier: EPL-2.0
+
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestLoadPrecedenceAndValidation(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "gateway.yaml")
+	secretFile := filepath.Join(dir, "bearer.secret")
+	dbSecretFile := filepath.Join(dir, "db.secret")
+
+	yamlContent := `
+gateway:
+  instanceId: "gw-file"
+  listenAddr: ":9090"
+storage:
+  dsn: "file:from-yaml.db"
+`
+	if err := os.WriteFile(cfgFile, []byte(yamlContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretFile, []byte("secret-from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// No user or password in the URL. The secret scanner treats
+	// user:password@host as a database credential even in tests.
+	if err := os.WriteFile(dbSecretFile, []byte("postgres://localhost:5432/scintx\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("SCINTX_ADDR", ":7070")
+	t.Setenv("SCINTX_AUTH_BEARER_TOKEN_FILE", secretFile)
+	t.Setenv("SCINTX_DATABASE_URL_FILE", dbSecretFile)
+
+	cfg, err := Load(cfgFile)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	// Env override wins over file.
+	if cfg.Gateway.ListenAddr != ":7070" {
+		t.Fatalf("got ListenAddr %q, want :7070", cfg.Gateway.ListenAddr)
+	}
+	// File value wins over built-in default.
+	if cfg.Gateway.InstanceID != "gw-file" {
+		t.Fatalf("got InstanceID %q, want gw-file", cfg.Gateway.InstanceID)
+	}
+	// Secret files load cleanly and override YAML.
+	if cfg.Auth.BearerToken != "secret-from-file" {
+		t.Fatalf("got token %q, want secret-from-file", cfg.Auth.BearerToken)
+	}
+	if cfg.Storage.DSN != "postgres://localhost:5432/scintx" {
+		t.Fatalf("got DSN %q, want postgres DSN", cfg.Storage.DSN)
+	}
+	if cfg.Revision == "" {
+		t.Fatal("expected non-empty config revision")
+	}
+}
+
+// TestRevisionIgnoresDSN checks that the config revision (which is logged)
+// does not depend on the database DSN, because a DSN can hold a password.
+// A setting that is not secret must still change the revision.
+func TestRevisionIgnoresDSN(t *testing.T) {
+	// Two different DSNs, neither shaped like a credential. The revision
+	// must stay the same when only the DSN changes.
+	t.Setenv("SCINTX_DATABASE_URL", "postgres://db-one.example/scintx")
+	first, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SCINTX_DATABASE_URL", "postgres://db-two.example/scintx")
+	second, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Revision != second.Revision {
+		t.Fatalf("revision changed with the DSN: %q vs %q", first.Revision, second.Revision)
+	}
+
+	t.Setenv("SCINTX_INSTANCE_ID", "another-instance")
+	third, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Revision == second.Revision {
+		t.Fatal("revision did not change when the instance id changed")
+	}
+}
+
+// TestBlobDirDefaultAndOverride covers the blob directory setting: it has a
+// default, and the environment wins over the file. (An empty value is
+// refused when the directory is opened. The blob package tests that.)
+func TestBlobDirDefaultAndOverride(t *testing.T) {
+	if got := Default().Storage.BlobDir; got != "data/blobs" {
+		t.Fatalf("got default BlobDir %q, want data/blobs", got)
+	}
+
+	cfgFile := filepath.Join(t.TempDir(), "gateway.yaml")
+	if err := os.WriteFile(cfgFile, []byte("storage:\n  blobDir: \"from-yaml\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(cfgFile)
+	if err != nil || cfg.Storage.BlobDir != "from-yaml" {
+		t.Fatalf("expected the file value, got %+v err=%v", cfg, err)
+	}
+	t.Setenv("SCINTX_BLOB_DIR", "from-env")
+	cfg, err = Load(cfgFile)
+	if err != nil || cfg.Storage.BlobDir != "from-env" {
+		t.Fatalf("expected the env value to win, got %+v err=%v", cfg, err)
+	}
+}
+
+func TestLoadFailClosedOnUnknownFieldOrEmptySecretFile(t *testing.T) {
+	dir := t.TempDir()
+	badYAML := filepath.Join(dir, "bad.yaml")
+	if err := os.WriteFile(badYAML, []byte("gateway:\n  unknownSetting: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(badYAML); err == nil {
+		t.Fatal("expected Load to fail closed on unknown YAML field")
+	}
+
+	emptySecret := filepath.Join(dir, "empty.secret")
+	if err := os.WriteFile(emptySecret, []byte("   \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SCINTX_AUTH_BEARER_TOKEN_FILE", emptySecret)
+	if _, err := Load(""); err == nil {
+		t.Fatal("expected Load to fail closed on empty secret file")
+	}
+}

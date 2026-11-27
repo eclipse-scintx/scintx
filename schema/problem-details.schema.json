@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://scintx.example/schemas/2020-12/problem-details.schema.json",
   "title": "ProblemDetails",
-  "description": "RFC 9457 Problem Details for HTTP APIs. SCINTX uses this for all API error responses.",
+  "description": "RFC 9457 Problem Details for HTTP APIs. Eclipse SCINTX uses this for all API error responses.",
   "type": "object",
   "required": ["type", "title", "status"],
   "properties": {

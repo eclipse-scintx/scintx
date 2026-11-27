@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: EPL-2.0
 
-# Build (if needed) and run the SCINTX HTTP server.
+# Build (if needed) and run the Eclipse SCINTX HTTP server.
 # Env: SCINTX_ADDR (default :8080)
 # Usage: ./scripts/run.sh
 

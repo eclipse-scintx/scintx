@@ -1,11 +1,13 @@
 // Copyright (c) 2026 Contributors to the Eclipse Foundation
 //
 // SPDX-License-Identifier: EPL-2.0
+
 package main
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -13,185 +15,90 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yeeth-security/scintx/api"
-	_ "github.com/yeeth-security/scintx/extensions/policies/all"
-	_ "github.com/yeeth-security/scintx/extensions/providers/all"
-	"github.com/yeeth-security/scintx/internal/auth"
-	"github.com/yeeth-security/scintx/internal/cache"
-	"github.com/yeeth-security/scintx/internal/scintx"
-	"github.com/yeeth-security/scintx/internal/server"
-	"github.com/yeeth-security/scintx/internal/store"
-	"github.com/yeeth-security/scintx/internal/webhook"
-	"github.com/yeeth-security/scintx/internal/workers"
+	"github.com/eclipse-scintx/scintx/internal/blob"
+	"github.com/eclipse-scintx/scintx/internal/config"
+	"github.com/eclipse-scintx/scintx/internal/gateway"
+	"github.com/eclipse-scintx/scintx/internal/server"
 )
 
-// runServe starts the HTTP gateway (default when no subcommand is given).
-func runServe() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+// warnAboutRiskyDefaults logs a warning for each default that is fine for a
+// local demo but unsafe or misleading in production. Both used to be silent.
+func warnAboutRiskyDefaults(cfg *config.Config, orch *gateway.Orchestrator) {
+	if cfg.Auth.BearerToken == "" {
+		slog.Warn("no bearer token is configured: anyone who can reach this address can create and read submissions; " +
+			"set SCINTX_AUTH_BEARER_TOKEN or SCINTX_AUTH_BEARER_TOKEN_FILE")
+	}
+	if !orch.HasExecutor() {
+		slog.Warn("no provider adapters are configured: every submission will end as \"failed\" " +
+			"(fail closed), because nothing can scan the artifact")
+	}
+}
 
-	storeCfg := store.ConfigFromEnv()
-	st, err := store.Open(storeCfg)
-	if err != nil {
-		slog.Error("failed to open store", "driver", storeCfg.Driver, "err", err)
-		os.Exit(1)
-	}
-	defer func() { _ = st.Close() }()
-	// Unset / memory = ephemeral forwarder: process submissions in-process;
-	// state is lost on restart. sqlite/postgres are durable stores.
-	if storeCfg.Driver == store.DriverMemory || storeCfg.Driver == "" {
-		slog.Info("store opened", "driver", "memory", "mode", "forwarder",
-			"note", "ephemeral; set SCINTX_STORE=sqlite|postgres for durable state")
-	} else {
-		slog.Info("store opened", "driver", storeCfg.Driver, "mode", "durable")
-	}
-
-	emitter := scintx.NewEventEmitter("https://scintx.example", st)
-
-	webhookCfg, err := webhook.ConfigFromEnv()
-	if err != nil {
-		slog.Error("invalid webhook config", "err", err)
-		os.Exit(1)
-	}
-	deliverer, err := webhook.Open(webhookCfg)
-	if err != nil {
-		slog.Error("failed to open webhook deliverer", "err", err)
-		os.Exit(1)
-	}
-	if deliverer != nil {
-		emitter.Deliverer = deliverer
-		slog.Info("webhook delivery enabled", "url", webhookCfg.URL)
-		defer func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = deliverer.Close(ctx)
-		}()
-	} else {
-		slog.Info("webhook delivery disabled (set SCINTX_WEBHOOK_URL to enable)")
-	}
-
-	// Load YAML policy engine (documents under SCINTX_POLICIES_DIR, default ./policies).
-	policyName := os.Getenv("SCINTX_POLICY_ENGINE")
-	if policyName == "" {
-		policyName = "yaml"
-	}
-	policy, err := api.LoadPolicyEngine(policyName)
-	if err != nil {
-		slog.Error("failed to load policy engine", "engine", policyName, "err", err)
-		os.Exit(1)
-	}
-	slog.Info("policy engine loaded", "engine", policy.ID())
-
-	cacheCfg, err := cache.ConfigFromEnv()
-	if err != nil {
-		slog.Error("invalid cache config", "err", err)
-		os.Exit(1)
-	}
-	resultCache, err := cache.Open(cacheCfg)
-	if err != nil {
-		slog.Error("failed to open cache", "backend", cacheCfg.Backend, "err", err)
-		os.Exit(1)
-	}
-	defer func() { _ = resultCache.Close() }()
-	slog.Info("cache opened", "backend", cacheCfg.Backend, "ttl", cache.DefaultTTL(cacheCfg).String())
-
-	orchOpts := []scintx.OrchestratorOption{
-		scintx.WithResultCache(resultCache, cache.DefaultTTL(cacheCfg)),
-		scintx.WithResultAggregator(scintx.NewDefaultAggregator()),
-	}
-	adjAllow := scintx.ParseAdjudicationForwardAllowlist()
-	orchOpts = append(orchOpts, scintx.WithAdjudicationForwarding(adjAllow))
-
-	// DefaultAggregator correlates findings across providers (same CVE → one MergedFinding).
-	orch := scintx.NewOrchestrator(st, policy, emitter, orchOpts...)
-	if err := orch.LoadProvidersFromRegistry(); err != nil {
-		slog.Error("failed to load providers", "err", err)
-		os.Exit(1)
-	}
-
-	slog.Info("SCINTX started", "providers", len(orch.Providers()))
-	for _, p := range orch.Providers() {
-		slog.Info("provider registered", "id", p.ID())
-	}
-	if len(adjAllow) > 0 {
-		ids := make([]string, 0, len(adjAllow))
-		for id := range adjAllow {
-			ids = append(ids, id)
+func runServe() error {
+	cfgPath := os.Getenv("SCINTX_CONFIG")
+	if cfgPath == "" {
+		if _, err := os.Stat("gateway.yaml"); err == nil {
+			cfgPath = "gateway.yaml"
 		}
-		slog.Info("adjudication forwarding enabled", "providers", ids)
-	} else {
-		slog.Info("adjudication forwarding disabled (set SCINTX_FORWARD_ADJUDICATIONS to enable)")
 	}
 
-	// Build HTTP server first so the worker pool shares its cancellable root context.
-	srv := server.New(st, orch, emitter, nil)
-
-	authCfg, err := auth.ConfigFromEnv()
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		slog.Error("invalid auth config", "err", err)
-		os.Exit(1)
-	}
-	if v := auth.NewVerifier(authCfg); v != nil {
-		srv.SetAuth(v)
-		slog.Info("inbound auth enabled", "profiles", authCfg.Profiles)
-	} else {
-		slog.Info("inbound auth disabled (set SCINTX_AUTH=hmac and/or bearer to enable)")
+		return fmt.Errorf("load configuration: %w", err)
 	}
 
-	workerCfg, err := workers.ConfigFromEnv()
+	store, err := gateway.OpenStore(cfg.Storage.DSN)
 	if err != nil {
-		slog.Error("invalid worker config", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("open storage: %w", err)
 	}
-	dispatcher, err := workers.Open(workerCfg, srv.RootContext(), orch.Process, st)
+	// This Close is for the early returns below (a bad blob directory, or a
+	// listener that fails to start). On a normal shutdown srv.Shutdown has
+	// already closed the store, and closing it a second time does nothing.
+	// The process is exiting and nothing can act on a close error, so the
+	// error is dropped on purpose. It was dropped before too, but silently.
+	// The linter (errcheck) flagged that, so it is now spelled out.
+	defer func() { _ = store.Close() }()
+
+	// Open the blob directory now, before serving. A missing or read-only
+	// volume then stops the gateway at startup with a clear message. Without
+	// this check it would only show up as a failed upload much later.
+	blobs, err := blob.OpenFileStore(cfg.Storage.BlobDir)
 	if err != nil {
-		slog.Error("failed to start worker pool", "err", err)
-		os.Exit(1)
-	}
-	srv.SetDispatcher(dispatcher)
-	slog.Info("worker pool ready",
-		"mode", workerCfg.Mode,
-		"workers", workerCfg.Workers,
-		"max_inflight", workerCfg.MaxInflight,
-		"lease", workerCfg.Lease.String(),
-	)
-
-	addr := os.Getenv("SCINTX_ADDR")
-	if addr == "" {
-		addr = ":8080"
+		return fmt.Errorf("open blob storage %q: %w", cfg.Storage.BlobDir, err)
 	}
 
-	// Graceful shutdown on SIGINT/SIGTERM: stop HTTP, cancel jobs, drain.
+	orch := gateway.NewOrchestratorWithBlobs(cfg, store, blobs)
+	srv := server.New(cfg, store, orch)
+	warnAboutRiskyDefaults(cfg, orch)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("SCINTX listening", "addr", addr)
-		errCh <- srv.Start(addr)
+		slog.Info("starting Eclipse SCINTX gateway",
+			"instanceId", cfg.Gateway.InstanceID,
+			"version", cfg.Gateway.Version,
+			"listenAddr", cfg.Gateway.ListenAddr,
+			// The revision is a short hash of the resolved configuration. It
+			// was computed before but never shown. Logging it lets an
+			// operator see at a glance whether two instances run the same
+			// configuration.
+			"configRevision", cfg.Revision,
+		)
+		if serveErr := srv.Start(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			errCh <- serveErr
+		}
+		close(errCh)
 	}()
 
 	select {
+	case serveErr := <-errCh:
+		return serveErr
 	case <-ctx.Done():
-		slog.Info("shutdown signal received")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		slog.Info("shutting down Eclipse SCINTX gateway", "instanceId", cfg.Gateway.InstanceID)
+		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			slog.Error("shutdown error", "err", err)
-		}
-		// Do not Close store/cache while workers may still write.
-		if !srv.WorkersDrained() {
-			slog.Warn("workers still draining; waiting extra before closing store")
-			extra, cancelExtra := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancelExtra()
-			if err := srv.WaitWorkers(extra); err != nil {
-				slog.Error("workers did not finish; store close may race", "err", err)
-				os.Exit(1)
-			}
-		}
-	case err := <-errCh:
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("server stopped", "err", err)
-			os.Exit(1)
-		}
+		return srv.Shutdown(shutCtx)
 	}
 }

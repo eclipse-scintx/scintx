@@ -1,4 +1,4 @@
-# golangci-lint v2 configuration for SCINTX.
+# golangci-lint v2 configuration for Eclipse SCINTX.
 # Run: golangci-lint run ./...
 version: "2"
 

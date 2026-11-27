@@ -1,417 +1,176 @@
 // Copyright (c) 2026 Contributors to the Eclipse Foundation
 //
 // SPDX-License-Identifier: EPL-2.0
+
 package api
 
-import "time"
-
-type Semver = string
-
-type ResourceReference struct {
-	URI           string            `json:"uri"`
-	MediaType     string            `json:"media_type"`
-	Digests       map[string]string `json:"digests,omitempty"`
-	Format        string            `json:"format,omitempty"`
-	FormatVersion string            `json:"format_version,omitempty"`
-	ExpiresAt     string            `json:"expires_at,omitempty"`
-	Extensions    map[string]any    `json:"extensions,omitempty"`
-}
-
-type ArtifactRef struct {
-	PURL       *string            `json:"purl,omitempty"`
-	Digests    map[string]string  `json:"digests,omitempty"`
-	ContentRef *ResourceReference `json:"content_ref,omitempty"`
-}
-
-type Artifact struct {
-	PURL           *string             `json:"purl,omitempty"`
-	Digests        map[string]string   `json:"digests,omitempty"`
-	ContentRef     *ResourceReference  `json:"content_ref,omitempty"`
-	SBOMRefs       []ResourceReference `json:"sbom_refs,omitempty"`
-	ProvenanceRefs []ResourceReference `json:"provenance_refs,omitempty"`
-	Extensions     map[string]any      `json:"extensions,omitempty"`
-	// Content is the local blob bytes for providers that need exact file data
-	// (malware scanners, etc.). It is filled by the orchestrator from the
-	// store when content_ref is a urn:scintx:blob:… URI. Never serialized.
-	Content []byte `json:"-"`
-}
-
-type SubmissionStatus string
-
-const (
-	SubmissionAccepted  SubmissionStatus = "accepted"
-	SubmissionRunning   SubmissionStatus = "running"
-	SubmissionCompleted SubmissionStatus = "completed"
-	SubmissionFailed    SubmissionStatus = "failed"
-	SubmissionDeferred  SubmissionStatus = "deferred"
+import (
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
 )
 
-type CompletionReason string
+// ErrValidation is the sentinel error wrapped by all artifact input validation
+// failures so HTTP handlers can distinguish 422 validation errors from 500
+// storage failures.
+var ErrValidation = errors.New("validation failed")
 
-const (
-	CompletionDecisionProduced       CompletionReason = "decision_produced"
-	CompletionFindingsOnly           CompletionReason = "findings_only"
-	CompletionDeferred               CompletionReason = "deferred"
-	CompletionFailed                 CompletionReason = "failed"
-	CompletionAllProvidersIneligible CompletionReason = "all_providers_ineligible"
-	// CompletionInterrupted means Process stopped because workCtx was cancelled
-	// (shutdown). Submission is terminal failed, not left running.
-	CompletionInterrupted CompletionReason = "interrupted"
-	// CompletionCapacityExceeded is reserved for capacity signals in problem
-	// details (HTTP 429). Rejected admits are not stored as failed submissions.
-	CompletionCapacityExceeded CompletionReason = "capacity_exceeded"
-)
+// SchemaVersionV1 is the current public Eclipse SCINTX payload schema version.
+const SchemaVersionV1 = "1"
 
-type Submission struct {
-	ID                    string            `json:"id"`
-	SchemaVersion         Semver            `json:"schema_version"`
-	Artifact              Artifact          `json:"artifact"`
-	RequestedCapabilities []string          `json:"requested_capabilities,omitempty"`
-	ProviderSelectors     map[string]any    `json:"provider_selectors,omitempty"`
-	PolicyRef             *string           `json:"policy_ref,omitempty"`
-	Status                SubmissionStatus  `json:"status"`
-	CompletionReason      *CompletionReason `json:"completion_reason,omitempty"`
-	CreatedAt             time.Time         `json:"created_at"`
-	CompletedAt           *time.Time        `json:"completed_at,omitempty"`
-	ResultIDs             []string          `json:"result_ids"`
-	DecisionID            *string           `json:"decision_id"`
-	ResumeAt              *time.Time        `json:"resume_at,omitempty"`
-	Extensions            map[string]any    `json:"extensions,omitempty"`
+// DefaultMaxContentBytes is the default 64 MiB limit for raw artifact uploads.
+const DefaultMaxContentBytes int64 = 64 * 1024 * 1024
+
+// ArtifactInput represents the submitted artifact for evaluation.
+// Exactly one of PURL, Digest, or an uploaded file must be supplied
+// (exclusive artifact types).
+type ArtifactInput struct {
+	PURL string `json:"purl,omitempty"`
+	// Digest holds a structured hash algorithm and hex value (#68, #70).
+	// Using a struct instead of a single "<algorithm>:<hex>" string lets
+	// policies and provider adapters inspect both fields without string parsing.
+	Digest *Digest `json:"digest,omitempty"`
+
+	// Upload holds what the server measured while streaming an uploaded file
+	// (see HashContent). It is tagged json:"-" so a client can never set it.
+	//
+	// It replaces the old Content []byte, Filename, and MediaType fields. Those
+	// forced the whole upload into memory just to hash it. Only the hash and
+	// size were ever kept, so the bytes are no longer buffered at all.
+	Upload *ContentMetadata `json:"-"`
+
+	// ContentMeta is the validated, public form of Upload. Only the server
+	// fills it in. It keeps its JSON tag because stored submissions are read
+	// back through it, but it is rejected when a client sends it.
+	// Updated from json:"content" to json:"contentMeta" to match #70.
+	ContentMeta *ContentMetadata `json:"contentMeta,omitempty"`
+
+	// OpenContent opens a read stream to the uploaded artifact bytes when
+	// ContentMeta is present (#70). It is tagged json:"-" because it is an
+	// in-memory callback attached by the worker when running an adapter.
+	OpenContent func() (io.ReadCloser, error) `json:"-"`
 }
 
-type ExecutionStatus string
-
-const (
-	ExecutionCompleted ExecutionStatus = "completed"
-	ExecutionError     ExecutionStatus = "error"
-	ExecutionTimeout   ExecutionStatus = "timeout"
-)
-
-type VerdictValue string
-
-const (
-	VerdictPass    VerdictValue = "pass"
-	VerdictWarn    VerdictValue = "warn"
-	VerdictFail    VerdictValue = "fail"
-	VerdictUnknown VerdictValue = "unknown"
-)
-
-type VerdictOrigin string
-
-const (
-	VerdictOriginProvider VerdictOrigin = "provider"
-	VerdictOriginAdapter  VerdictOrigin = "adapter"
-)
-
-type VerdictDerivationEntry struct {
-	FindingID string `json:"finding_id"`
-	Weight    string `json:"weight"`
+// Digest represents a cryptographic hash algorithm and value (#68, #70).
+type Digest struct {
+	Algorithm string `json:"algorithm"`
+	Value     string `json:"value"`
 }
 
-type VerdictDerivation struct {
-	DrivenBy []VerdictDerivationEntry `json:"driven_by"`
-	Summary  string                   `json:"summary"`
+// ParseDigest splits a "<algorithm>:<hex>" string from a multipart form field
+// into a Digest struct. ValidateDigest checks the returned struct afterward.
+//
+// It always returns a non-nil Digest so that an empty "digest" form field is
+// still counted as a provided field and rejected by validation (instead of
+// being silently ignored when sent alongside a purl).
+func ParseDigest(s string) *Digest {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return &Digest{}
+	}
+	parts := strings.SplitN(trimmed, ":", 2)
+	if len(parts) != 2 {
+		return &Digest{Algorithm: trimmed}
+	}
+	return &Digest{
+		Algorithm: parts[0],
+		Value:     parts[1],
+	}
 }
 
-type Verdict struct {
-	Value      VerdictValue       `json:"value"`
-	Origin     VerdictOrigin      `json:"origin"`
-	Rule       string             `json:"rule,omitempty"`
-	Derivation *VerdictDerivation `json:"derivation,omitempty"`
+// ValidateAndNormalizeArtifact validates the submitted artifact fields and
+// enforces that exactly one artifact form (purl, digest, or content) is
+// supplied. It fails closed wrapping ErrValidation if zero or multiple
+// artifact types are provided, or if any field is malformed.
+func ValidateAndNormalizeArtifact(in ArtifactInput, maxBytes int64) (ArtifactInput, error) {
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxContentBytes
+	}
+	// A client must not hand us "contentMeta" metadata in JSON. The server
+	// computes it from real bytes. Before this check the object was silently
+	// dropped, so a request could look like it carried content when it did not.
+	if in.ContentMeta != nil {
+		return ArtifactInput{}, fmt.Errorf("%w: content metadata is computed by the server; upload the file with multipart/form-data", ErrValidation)
+	}
+	out := ArtifactInput{
+		PURL: strings.TrimSpace(in.PURL),
+	}
+
+	providedCount := 0
+	if out.PURL != "" {
+		providedCount++
+	}
+	if in.Digest != nil {
+		// Normalize both algorithm and hex value to lowercase and trim whitespace.
+		out.Digest = &Digest{
+			Algorithm: strings.ToLower(strings.TrimSpace(in.Digest.Algorithm)),
+			Value:     strings.ToLower(strings.TrimSpace(in.Digest.Value)),
+		}
+		providedCount++
+	}
+	if in.Upload != nil {
+		providedCount++
+	}
+	if providedCount != 1 {
+		return ArtifactInput{}, fmt.Errorf("%w: artifact requires exactly one of purl, digest, or content", ErrValidation)
+	}
+
+	if out.PURL != "" {
+		canonical, err := CanonicalPurl(out.PURL)
+		if err != nil {
+			return ArtifactInput{}, fmt.Errorf("%w: invalid purl: %w", ErrValidation, err)
+		}
+		out.PURL = canonical
+	}
+
+	if out.Digest != nil {
+		if err := ValidateDigest(*out.Digest); err != nil {
+			return ArtifactInput{}, err
+		}
+	}
+
+	if in.Upload != nil {
+		upload := *in.Upload
+		upload.Filename = strings.TrimSpace(upload.Filename)
+		upload.MediaType = strings.TrimSpace(upload.MediaType)
+		meta, err := validateUpload(upload, maxBytes)
+		if err != nil {
+			return ArtifactInput{}, err
+		}
+		// Only the clean public metadata leaves this function. out.Upload
+		// stays nil, so the raw measured values are not carried any further.
+		out.ContentMeta = meta
+	}
+
+	return out, nil
 }
 
-type ProviderErrorCode string
-
-const (
-	ErrTransport          ProviderErrorCode = "transport_error"
-	ErrProvider5xx        ProviderErrorCode = "provider_5xx"
-	ErrProvider4xx        ProviderErrorCode = "provider_4xx"
-	ErrNormalization      ProviderErrorCode = "normalization_error"
-	ErrSemantic           ProviderErrorCode = "semantic_error"
-	ErrUnsupportedVersion ProviderErrorCode = "unsupported_version"
-	ErrTimeout            ProviderErrorCode = "timeout"
-)
-
-type ProviderError struct {
-	Code    ProviderErrorCode `json:"code"`
-	Message string            `json:"message"`
-	Detail  map[string]any    `json:"detail,omitempty"`
-}
-
-type Execution struct {
-	Status     ExecutionStatus `json:"status"`
-	StartedAt  time.Time       `json:"started_at"`
-	FinishedAt time.Time       `json:"finished_at"`
-	Error      *ProviderError  `json:"error,omitempty"`
-}
-
-type CacheInfo struct {
-	Hit              bool       `json:"hit"`
-	OriginalResultID string     `json:"original_result_id,omitempty"`
-	ValidUntil       *time.Time `json:"valid_until,omitempty"`
-	FreshnessBasis   string     `json:"freshness_basis,omitempty"`
-}
-
-type ProviderResult struct {
-	ID                       string             `json:"id"`
-	SchemaVersion            Semver             `json:"schema_version"`
-	SubmissionID             string             `json:"submission_id"`
-	Provider                 ProviderRef        `json:"provider"`
-	Capabilities             []string           `json:"capabilities"`
-	CapabilityManifestDigest string             `json:"capability_manifest_digest"`
-	Execution                Execution          `json:"execution"`
-	Verdict                  *Verdict           `json:"verdict,omitempty"`
-	Findings                 []Finding          `json:"findings,omitempty"`
-	RawResult                *ResourceReference `json:"raw_result,omitempty"`
-	Cache                    *CacheInfo         `json:"cache,omitempty"`
-	Extensions               map[string]any     `json:"extensions,omitempty"`
-}
-
-type ProviderRef struct {
-	ID      string `json:"id"`
-	Version string `json:"version"`
-}
-
-type IdentifierRelation string
-
-const (
-	RelNone     IdentifierRelation = "none"
-	RelAlias    IdentifierRelation = "alias"
-	RelUpstream IdentifierRelation = "upstream"
-	RelRelated  IdentifierRelation = "related"
-)
-
-type TypedIdentifier struct {
-	Scheme   string             `json:"scheme"`
-	Value    string             `json:"value"`
-	Relation IdentifierRelation `json:"relation,omitempty"`
-}
-
-type SubjectOrigin string
-
-const (
-	SubjectSubmittedArtifact SubjectOrigin = "submitted_artifact"
-	SubjectComponent         SubjectOrigin = "component"
-)
-
-type AssessmentStatus string
-
-const (
-	AssessAffected           AssessmentStatus = "affected"
-	AssessNotAffected        AssessmentStatus = "not_affected"
-	AssessFixed              AssessmentStatus = "fixed"
-	AssessUnderInvestigation AssessmentStatus = "under_investigation"
-	AssessUnknown            AssessmentStatus = "unknown"
-)
-
-type Assessment struct {
-	Status        AssessmentStatus `json:"status"`
-	Justification string           `json:"justification,omitempty"`
-	Detail        string           `json:"detail,omitempty"`
-}
-
-type CweRef struct {
-	Scheme string `json:"scheme"`
-	ID     string `json:"id"`
-}
-
-type SeverityObservation struct {
-	Scheme     string          `json:"scheme"`
-	Version    string          `json:"version,omitempty"`
-	Score      *float64        `json:"score,omitempty"`
-	Level      string          `json:"level,omitempty"`
-	Vector     string          `json:"vector,omitempty"`
-	Source     string          `json:"source,omitempty"`
-	Derivation *DerivationInfo `json:"derivation,omitempty"`
-}
-
-type DerivationInfo struct {
-	Method string `json:"method"`
-}
-
-type Metric struct {
-	Scheme     string         `json:"scheme"`
-	Value      any            `json:"value"`
-	Version    string         `json:"version,omitempty"`
-	Percentile *float64       `json:"percentile,omitempty"`
-	ObservedAt *time.Time     `json:"observed_at,omitempty"`
-	Extensions map[string]any `json:"extensions,omitempty"`
-}
-
-type Remediation struct {
-	Summary    string   `json:"summary,omitempty"`
-	Detail     string   `json:"detail,omitempty"`
-	References []string `json:"references,omitempty"`
-}
-
-type Finding struct {
-	ID            string                `json:"id"`
-	Type          string                `json:"type"`
-	Title         string                `json:"title,omitempty"`
-	Description   string                `json:"description,omitempty"`
-	Identifiers   []TypedIdentifier     `json:"identifiers,omitempty"`
-	Subjects      []ArtifactRef         `json:"subjects,omitempty"`
-	SubjectOrigin SubjectOrigin         `json:"subject_origin,omitempty"`
-	SubjectPath   []string              `json:"subject_path,omitempty"`
-	Severity      []SeverityObservation `json:"severity,omitempty"`
-	Weaknesses    []CweRef              `json:"weaknesses,omitempty"`
-	Assessment    *Assessment           `json:"assessment,omitempty"`
-	References    []string              `json:"references,omitempty"`
-	Evidence      []ResourceReference   `json:"evidence,omitempty"`
-	Remediation   *Remediation          `json:"remediation,omitempty"`
-	Fingerprints  map[string]string     `json:"fingerprints,omitempty"`
-	Metrics       []Metric              `json:"metrics,omitempty"`
-	Extensions    map[string]any        `json:"extensions,omitempty"`
-}
-
-type PolicyDecisionValue string
-
-const (
-	DecisionAllow  PolicyDecisionValue = "allow"
-	DecisionReview PolicyDecisionValue = "review"
-	DecisionDeny   PolicyDecisionValue = "deny"
-	DecisionDefer  PolicyDecisionValue = "defer"
-)
-
-type SeverityRef struct {
-	Scheme  string   `json:"scheme"`
-	Version string   `json:"version,omitempty"`
-	Score   *float64 `json:"score,omitempty"`
-}
-
-type DecisionReason struct {
-	Code        string       `json:"code"`
-	ResultID    string       `json:"result_id"`
-	FindingID   string       `json:"finding_id,omitempty"`
-	SeverityRef *SeverityRef `json:"severity_ref,omitempty"`
-	Message     string       `json:"message"`
-}
-
-type PolicyDecision struct {
-	ID             string              `json:"id"`
-	SubmissionID   string              `json:"submission_id"`
-	Decision       PolicyDecisionValue `json:"decision"`
-	Policy         PolicyRef           `json:"policy"`
-	EvaluatedAt    time.Time           `json:"evaluated_at"`
-	InputResultIDs []string            `json:"input_result_ids"`
-	Reasons        []DecisionReason    `json:"reasons,omitempty"`
-	ResumeAt       *time.Time          `json:"resume_at,omitempty"`
-	ResumeOn       string              `json:"resume_on,omitempty"`
-	Extensions     map[string]any      `json:"extensions,omitempty"`
-}
-
-// AdjudicateRequest is a consumer-side final resolution shared back to the gateway.
-// Resolution happens in the system that plugs into SCINTX results (registry UI,
-// ticketing, etc.); this request records that outcome for audit and webhooks.
-type AdjudicateRequest struct {
-	// Decision must be allow or deny (review/defer are not valid finals).
-	Decision PolicyDecisionValue `json:"decision"`
-	// Actor is who resolved it (email, service account, etc.).
-	Actor string `json:"actor,omitempty"`
-	// Rationale is the human/org explanation.
-	Rationale string `json:"rationale,omitempty"`
-	// Source names the external system where resolution happened.
-	Source string `json:"source,omitempty"`
-	// ExpiresAt optionally bounds a temporary exception (ISO-8601).
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
-	// Extensions are opaque consumer fields copied onto the stored decision.
-	Extensions map[string]any `json:"extensions,omitempty"`
-}
-
-type PolicyRef struct {
-	ID      string `json:"id"`
-	Version string `json:"version"`
-	Digest  string `json:"digest,omitempty"`
-}
-
-type CloudEvent struct {
-	SpecVersion     string         `json:"specversion"`
-	ID              string         `json:"id"`
-	Source          string         `json:"source"`
-	Type            string         `json:"type"`
-	Subject         string         `json:"subject,omitempty"`
-	Time            time.Time      `json:"time"`
-	DataContentType string         `json:"datacontenttype,omitempty"`
-	DataSchema      string         `json:"dataschema,omitempty"`
-	Data            map[string]any `json:"data,omitempty"`
-	Sequence        *int           `json:"sequence,omitempty"`
-}
-
-type RequirementKind string
-
-const (
-	ReqPurl       RequirementKind = "purl"
-	ReqDigest     RequirementKind = "digest"
-	ReqContent    RequirementKind = "content"
-	ReqSBOM       RequirementKind = "sbom"
-	ReqProvenance RequirementKind = "provenance"
-)
-
-type Requirement struct {
-	Kind       RequirementKind     `json:"kind"`
-	Types      []string            `json:"types,omitempty"`
-	Algorithms []string            `json:"algorithms,omitempty"`
-	Formats    map[string][]string `json:"formats,omitempty"`
-}
-
-type InputProfile struct {
-	ID       string        `json:"id"`
-	Requires []Requirement `json:"requires"`
-}
-
-type Capability struct {
-	ID                  string         `json:"id"`
-	Version             string         `json:"version"`
-	InputProfiles       []InputProfile `json:"input_profiles"`
-	FindingTypes        []string       `json:"finding_types"`
-	NativeOutputFormats []string       `json:"native_output_formats,omitempty"`
-	Limits              map[string]any `json:"limits,omitempty"`
-	CostHint            string         `json:"cost_hint,omitempty"`
-	LatencyHint         string         `json:"latency_hint,omitempty"`
-}
-
-type ProviderCapabilities struct {
-	SchemaVersion   Semver       `json:"schema_version"`
-	Provider        ProviderRef  `json:"provider"`
-	ManifestVersion string       `json:"manifest_version"`
-	ManifestDigest  string       `json:"manifest_digest"`
-	UpdatedAt       time.Time    `json:"updated_at"`
-	Capabilities    []Capability `json:"capabilities"`
-	// AcceptsAdjudications is a capability flag: when true, the provider may
-	// receive anonymous adjudication feedback (decision + PURL) if enabled via
-	// SCINTX_FORWARD_ADJUDICATIONS and it implements AdjudicationReceiver.
-	AcceptsAdjudications bool           `json:"accepts_adjudications,omitempty"`
-	Extensions           map[string]any `json:"extensions,omitempty"`
-}
-
-type CompatibilityReasonCode string
-
-const (
-	ReasonMissingInput        CompatibilityReasonCode = "missing_required_input"
-	ReasonUnsupportedPurlType CompatibilityReasonCode = "unsupported_purl_type"
-	ReasonUnsupportedDigest   CompatibilityReasonCode = "unsupported_digest_algorithm"
-	ReasonUnsupportedSBOM     CompatibilityReasonCode = "unsupported_sbom_format"
-	ReasonSizeExceeded        CompatibilityReasonCode = "size_exceeded"
-	ReasonNoMatchingProfile   CompatibilityReasonCode = "no_matching_profile"
-)
-
-type CompatibilityReason struct {
-	Code   CompatibilityReasonCode `json:"code"`
-	Input  string                  `json:"input,omitempty"`
-	Detail string                  `json:"detail,omitempty"`
-}
-
-type CompatibilityResult struct {
-	ProviderID string                `json:"provider_id"`
-	Capability string                `json:"capability"`
-	Eligible   bool                  `json:"eligible"`
-	Reasons    []CompatibilityReason `json:"reasons,omitempty"`
-}
-
-type ProblemDetails struct {
-	Type     string `json:"type"`
-	Title    string `json:"title"`
-	Status   int    `json:"status"`
-	Detail   string `json:"detail,omitempty"`
-	Instance string `json:"instance,omitempty"`
+// ValidateDigest verifies that a Digest struct uses a supported algorithm
+// (sha256, sha384, sha512) and valid hexadecimal characters of the right length.
+func ValidateDigest(d Digest) error {
+	alg := strings.ToLower(strings.TrimSpace(d.Algorithm))
+	val := strings.ToLower(strings.TrimSpace(d.Value))
+	if alg == "" || val == "" {
+		return fmt.Errorf("%w: invalid digest: both algorithm and value are required", ErrValidation)
+	}
+	var expectedLen int
+	switch alg {
+	case "sha256":
+		expectedLen = 64
+	case "sha384":
+		expectedLen = 96
+	case "sha512":
+		expectedLen = 128
+	default:
+		return fmt.Errorf("%w: unsupported digest algorithm %q", ErrValidation, alg)
+	}
+	if len(val) != expectedLen {
+		return fmt.Errorf("%w: invalid %s digest length: got %d hex chars, want %d", ErrValidation, alg, len(val), expectedLen)
+	}
+	if _, err := hex.DecodeString(val); err != nil {
+		return fmt.Errorf("%w: invalid digest hex in %s:%s: %w", ErrValidation, alg, val, err)
+	}
+	return nil
 }

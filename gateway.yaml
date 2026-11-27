@@ -1,0 +1,20 @@
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# SPDX-License-Identifier: EPL-2.0
+
+# Eclipse SCINTX Gateway Configuration
+gateway:
+  instanceId: "gateway-001"
+  version: "0.1.0"
+  listenAddr: ":8080"
+  maxContentBytes: 67108864
+  # Concurrent background workers for parallel short HTTP and long binary tasks.
+  workers: 4
+
+storage:
+  # Persistent SQLite file by default; also accepts "postgres://..." or "memory".
+  # SQLite supports ONE gateway process. Use PostgreSQL to run several.
+  dsn: "file:data/scintx.db"
+  # Directory for uploaded content. A file stays here only until its
+  # submission is finished. Gateways that share one database must share it.
+  blobDir: "data/blobs"

@@ -1,113 +1,127 @@
 # Eclipse SCINTX
 
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/yeeth-security/scintx/badge)](https://scorecard.dev/viewer/?uri=github.com/yeeth-security/scintx)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/eclipse-scintx/scintx/badge)](https://scorecard.dev/viewer/?uri=github.com/eclipse-scintx/scintx)
 
-> **S**upply **C**hain **INT**elligence E**X**change — a vendor-neutral open
-> standard for package-security integration.
-
-Eclipse SCINTX sits between package registries and security providers, defining a
-common submission API, normalized verdict vocabulary, policy engine, and signed
-webhook lifecycle. The goal is to eliminate duplicated integration work, make
-security verdicts portable, and let registries and enterprises mix-and-match
-providers without vendor lock-in.
+> **S**upply **C**hain **INT**elligence E**X**change — a reusable gateway connecting software registries and consumers with supply-chain security providers.
 
 ---
 
-## Why
+## Overview
 
-Security providers produce heterogeneous information — different schemas,
-different verdict vocabularies, different notions of severity and confidence.
-Meanwhile, registries and organizations need a portable way to consume that
-information and apply policy across it. Today every registry builds bespoke
-integrations with individual vendors, with no shared data model and no
-portability: a verdict from one provider cannot be compared with, substituted
-for, or combined with a verdict from another.
-
-Eclipse SCINTX breaks that pattern by defining a vendor-neutral integration layer —
-normalizing provider output into a common verdict model and giving registries
-and organizations a single policy surface that works across any conforming
-provider. A verdict becomes portable, a policy becomes auditable, and a
-registry can swap or mix providers without rewriting its integration.
+The Eclipse SCINTX gateway provides a containerized HTTP service for artifact submission, validation (`purl`, cryptographic `digest`, or raw `content` bytes), persistent status tracking, and health probing.
 
 ---
 
-## Scope
+## Quick Start (Local Binary)
 
-**Core**
-
-- An interoperability specification for package-security scanning, normalized
-  verdict/security model, provider interface, and policy model.
-- A reference implementation of the gateway and policy engine.
-- Reference adapters for major security providers.
-- HTTP integration for registries, CI, and feed bridges (e.g. package-feeds).
-
-**Out of scope**
-
-- Operating a public package registry.
-- In-process registry pollers (prefer external feeds → `POST /v1/submissions`).
-- Replacing existing security scanners — SCINTX *integrates* scanners, it does
-  not compete with them.
-- Commercial hosting or SaaS offerings — those may be offered independently by
-  ecosystem vendors.
-
----
-
-## Quickstart
-
-Requires [Go 1.26.10+](https://go.dev/dl/) (earlier versions lack the eMudhra CA distrust fix).
+Requires [Go 1.26.10+](https://go.dev/dl/).
 
 ```bash
-git clone https://github.com/yeeth-security/scintx.git
-cd scintx
 make build
-./bin/scintx
+./bin/scintx serve
 ```
 
-The gateway listens on `:8080`. With no `SCINTX_STORE` set it runs as an
-ephemeral forwarder (in-memory; state is gone on restart).
+Or run the self-contained deterministic demonstration (requires no live provider credentials or network access):
 
-Submit a package URL:
+```bash
+make demo
+```
+
+---
+
+## Container Build and Run
+
+Build the reproducible, non-root container image:
+
+```bash
+docker build -t scintx-gateway:latest .
+```
+
+Run the container with a mounted `/data` volume for persistent SQLite storage:
+
+```bash
+docker run --rm -p 8080:8080 -v scintx-data:/data scintx-gateway:latest
+```
+
+To check that the image builds, starts, and reports healthy, run `make image-check`. CI runs the same check on every pull request.
+
+### Container Runtime and Filesystem Requirements
+
+- **Minimal runtime:** Built on `gcr.io/distroless/static-debian12:nonroot` with a statically linked Go binary (`/scintx`).
+- **Non-root execution:** Runs as UID/GID `65532:65532` (`nonroot`).
+- **Filesystem requirements:**
+  - `/scintx`: Read-only gateway executable.
+  - `/app/gateway.yaml`: Read-only default gateway configuration.
+  - `/data`: Writable directory (owned by `65532:65532`) for the default SQLite database (`file:/data/scintx.db`) and WAL files when using embedded SQLite storage. It also holds uploaded content under `/data/blobs` (`SCINTX_BLOB_DIR`), so it must be writable even when PostgreSQL is configured. The gateway checks this at startup and stops with a clear error if it cannot write there.
+  - `/tmp`: Not used. A `multipart/form-data` upload is hashed and written to `/data/blobs` as it streams in. It is never buffered in memory. The container supports `--read-only` root filesystems when `/data` is mounted.
+
+---
+
+## Liveness and Readiness Probes
+
+The gateway exposes HTTP health endpoints and a built-in CLI probe subcommand (`scintx health`) that works inside the distroless image without `curl` or a shell:
+
+- **Liveness (`GET /healthz`):** Returns `200 OK` (`{"status":"ok"}`) when the HTTP server process is alive.
+- **Readiness (`GET /readyz`):** Returns `200 OK` (`{"status":"ready"}`) when configuration is loaded, the persistent database (`SQLite` or `PostgreSQL`) responds to a health ping, and the server is ready to accept submissions. Returns `503 Service Unavailable` during graceful shutdown or if storage is unreachable.
+- **Container probe command:** `["/scintx", "health"]` (configured as the `Dockerfile` `HEALTHCHECK`).
+
+---
+
+## Configuration and Credential Handling
+
+Configuration values resolve in precedence order (highest to lowest):
+
+1. **Environment variables and mounted `*_FILE` secret files** (e.g., `SCINTX_ADDR`, `SCINTX_INSTANCE_ID`, `SCINTX_DATABASE_URL`, `SCINTX_DATABASE_URL_FILE`, `SCINTX_BLOB_DIR`, `SCINTX_AUTH_BEARER_TOKEN`, `SCINTX_AUTH_BEARER_TOKEN_FILE`)
+2. **Gateway configuration file** (`gateway.yaml` or `SCINTX_CONFIG`)
+3. **Built-in defaults**
+
+Secrets and database credentials are supplied via environment variables or mounted secret files (`*_FILE`) and are never written into `gateway.yaml` or API responses.
+
+---
+
+## Walkthrough: Submit, Poll Status, and Validation Error
+
+### 1. Submit a valid artifact (`POST /v1/submissions`)
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/v1/submissions \
   -H 'Content-Type: application/json' \
-  -d '{
-    "schema_version": "1.0.0",
-    "artifact": {"purl": "pkg:npm/left-pad@1.3.0"},
-    "requested_capabilities": ["vulnerability"],
-    "policy_ref": "registry-default"
-  }'
+  -d '{"artifact": {"purl": "pkg:npm/lodash@4.17.20"}}'
 ```
 
-Poll `GET /v1/submissions/{id}` until `status` is `completed`, then
-`GET /v1/submissions/{id}/results` (and `/merged` when several providers ran).
-
-**Live providers.** Default load is every registered factory. For OSV + Sonatype
-OSS Index:
+### 2. Poll submission status (`GET /v1/submissions/{id}`)
 
 ```bash
-./bin/scintx auth ossindex          # Guide PAT → OS keyring (not .env)
-SCINTX_PROVIDERS=osv,ossindex ./bin/scintx
+curl -sS http://127.0.0.1:8080/v1/submissions/<submission-id>
 ```
 
-Create a Guide PAT at https://guide.sonatype.com. CI should inject
-`SCINTX_OSSINDEX_TOKEN` from a secret store instead of `auth`.
+### 3. Validation failure (`HTTP 422 Unprocessable Entity`)
 
-Useful targets: `make run`, `make test`, `make check`. Full env list:
-[`.env.example`](.env.example).
+```bash
+curl -i -X POST http://127.0.0.1:8080/v1/submissions \
+  -H 'Content-Type: application/json' \
+  -d '{"artifact": {"purl": "invalid-purl"}}'
+```
+
+---
+
+## Persistent Storage, Self-Healing Restart Behavior, and Limitations
+
+- **Persistent state retention (`SQLite` & `PostgreSQL`):** Submissions are persisted via `database/sql` (`internal/gateway/sql_store.go`). By default, the gateway uses a pure-Go embedded SQLite database (`file:data/scintx.db` locally, `file:/data/scintx.db` in containers) with Write-Ahead Logging (`WAL`). For multi-instance deployments, set `SCINTX_DATABASE_URL` (or `SCINTX_DATABASE_URL_FILE`) to a `postgres://...` connection URI.
+- **Self-healing restart behavior (no stuck scans):** Work is claimed from the persistent store using time-bounded leases (`lease_until`) and an execution attempt counter (`attempts`). If the gateway restarts or crashes while a submission is in `accepted` or `running` state, the submission is not killed: once its lease expires, the gateway's normal worker loop automatically re-claims and completes it. If a submission repeatedly fails or crashes across `DefaultMaxAttempts` (3 attempts), it automatically transitions to terminal `failed` state (fail-closed) so scans never get stuck and no separate recovery service is required.
+- **Retries and deploys:** An attempt that fails with a retryable error is retried after a backoff (5s, then 10s). An attempt that a graceful shutdown cuts short is released at once and does not count toward the 3-attempt limit. The `attempts` field counts every claim; the `interruptions` field counts the ones a shutdown cut short.
+- **Uploaded content (`SCINTX_BLOB_DIR`):** The bytes of a `content` upload are streamed to a file in the blob directory (`data/blobs` locally, `/data/blobs` in containers) so provider adapters can read them. An upload uses a small fixed amount of memory, whatever the file size, so many uploads at once do not grow memory. The file is deleted as soon as its submission reaches `completed` or `failed`. It is kept across retries and graceful shutdowns, because the next attempt still needs it. A background sweep (once per minute, and at startup) removes anything a crash left behind.
+- **Deployment limitations:**
+  - Embedded SQLite supports a single gateway container instance; multi-replica deployments require PostgreSQL (`SCINTX_DATABASE_URL=postgres://...`).
+  - Multi-replica deployments must also mount one shared volume as the blob directory on every replica. Otherwise a worker on one replica cannot read a file that another replica received.
+  - The blob directory has no size quota. Plan disk space for the largest upload (`gateway.maxContentBytes`, 64 MiB by default) times the number of submissions that can be queued or running at once.
+  - Provider adapter execution, aggregation, and policy evaluation are staged in subsequent releases.
+  - **The gateway fails closed: no submission can reach `completed` yet.** No provider adapters run in this release, so nothing can scan an artifact. Every valid submission therefore ends as `failed` with the error `no provider adapters are configured; the artifact was not scanned`. It is not retried. The gateway logs a warning about this at startup. A `completed` status will only appear once an adapter has actually run.
+  - **Uploaded content is not scanned yet.** The bytes of a `content` upload are stored for the provider adapters, but no adapter runs in this release. So today a submission fails closed at once and its file is deleted right away. The submission record keeps only the SHA-256, size, filename, and media type.
+  - **Authentication is off by default.** Set `SCINTX_AUTH_BEARER_TOKEN` (or `SCINTX_AUTH_BEARER_TOKEN_FILE`) before exposing the gateway. The gateway logs a warning at startup when no token is set.
 
 ---
 
 ## License
 
 Distributed under the Eclipse Public License 2.0 (EPL-2.0).
-
-Changes: [CHANGELOG.md](CHANGELOG.md).
-
----
-
-## Architecture
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reference gateway
-design (ASD-STE100 style, with diagrams). Extensions:
-[docs/EXTENSIONS.md](docs/EXTENSIONS.md).
