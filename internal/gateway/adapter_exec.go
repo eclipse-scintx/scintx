@@ -57,10 +57,8 @@ func (o *Orchestrator) evaluateAdapters(ctx context.Context, sub *api.Submission
 			continue
 		}
 		if inputType == adapter.InputTypePURL && len(desc.SupportedInputs.Ecosystems) > 0 {
-			if purlType, pErr := api.PurlType(artIn.PURL); pErr == nil {
-				if !slices.Contains(desc.SupportedInputs.Ecosystems, adapter.Ecosystem(purlType)) {
-					continue
-				}
+			if purlType, pErr := api.PurlType(artIn.PURL); pErr == nil && !slices.Contains(desc.SupportedInputs.Ecosystems, adapter.Ecosystem(purlType)) {
+				continue
 			}
 		}
 		matched = append(matched, prov)
@@ -68,11 +66,14 @@ func (o *Orchestrator) evaluateAdapters(ctx context.Context, sub *api.Submission
 
 	if len(matched) == 0 {
 		// Record provenance for every registered adapter explaining that none
-		// supported the submitted artifact input before failing closed (#98).
-		unmatchedErr := &adapter.AdapterError{
-			Code:    adapter.ErrUnsupportedInput,
-			Message: fmt.Sprintf("adapter does not support %s artifacts", inputType),
+		// supported the submitted artifact input or PURL ecosystem before failing closed (#97, #98).
+		msg := fmt.Sprintf("adapter does not support %s artifacts", inputType)
+		if inputType == adapter.InputTypePURL {
+			if purlType, pErr := api.PurlType(artIn.PURL); pErr == nil && purlType != "" {
+				msg = fmt.Sprintf("adapter does not support PURL ecosystem %q", purlType)
+			}
 		}
+		unmatchedErr := &adapter.AdapterError{Code: adapter.ErrUnsupportedInput, Message: msg}
 		sub.Reports = make([]json.RawMessage, 0, len(o.adapters))
 		for _, prov := range o.adapters {
 			desc := prov.Descriptor()
@@ -81,7 +82,7 @@ func (o *Orchestrator) evaluateAdapters(ctx context.Context, sub *api.Submission
 				sub.Reports = append(sub.Reports, json.RawMessage(raw))
 			}
 		}
-		return fmt.Errorf("no configured provider adapter supports %s artifacts", inputType)
+		return fmt.Errorf("no configured provider adapter supports %s", msg[len("adapter does not support "):])
 	}
 
 	rawReports := make([]json.RawMessage, len(matched))
@@ -156,8 +157,7 @@ func (o *Orchestrator) evaluateAdapters(ctx context.Context, sub *api.Submission
 // error (so a permanent failure in one provider never wastes retry attempts),
 // and finally the first retryable error.
 func selectAdapterError(errs []error) error {
-	var firstRetryable error
-	var firstNonRetryable error
+	var firstRetryable, firstNonRetryable error
 	for _, err := range errs {
 		if err == nil {
 			continue
@@ -184,9 +184,7 @@ func (o *Orchestrator) prepareAdapterArtifact(sub *api.Submission) (adapter.Arti
 	if art.ContentMeta != nil {
 		if o.blobs != nil {
 			id := sub.ID
-			art.OpenContent = func() (io.ReadCloser, error) {
-				return o.OpenContent(id)
-			}
+			art.OpenContent = func() (io.ReadCloser, error) { return o.OpenContent(id) }
 		}
 		return art, adapter.InputTypeContent
 	}

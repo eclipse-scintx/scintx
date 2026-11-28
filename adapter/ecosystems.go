@@ -6,6 +6,7 @@ package adapter
 
 import (
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -97,6 +98,16 @@ func ValidateVersionedPURL(
 		return "", "", &AdapterError{
 			Code:    ErrUnsupportedInput,
 			Message: fmt.Sprintf("%s adapter requires a PURL namespace for ecosystem %q", providerSlug, purlType),
+		}
+	}
+	// Reject semver/comparator/bracket version ranges in @version while allowing
+	// '~' inside exact Debian/RPM/pre-release versions (e.g. 1.2.3~rc1) and '+'
+	// in build metadata (#95, #96, #97).
+	decodedVer, _ := url.PathUnescape(ver)
+	if strings.HasPrefix(decodedVer, "~") || strings.HasPrefix(decodedVer, "^") || strings.ContainsAny(decodedVer, "<>=*,[]() ") {
+		return "", "", &AdapterError{
+			Code:    ErrUnsupportedInput,
+			Message: providerSlug + " adapter requires an exact package version, not a version range",
 		}
 	}
 	return canonical, ver, nil

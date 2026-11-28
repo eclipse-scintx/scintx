@@ -7,7 +7,6 @@ package ossindex
 import (
 	"context"
 	"encoding/json"
-	"net/url"
 	"slices"
 	"strings"
 
@@ -72,25 +71,12 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 
 // validateAndMapPURL verifies that rawPURL is a valid, exact-version PURL in a
 // supported OSS Index ecosystem and returns both the canonical SCINTX PURL and
-// the minimized coordinate sent to POST /api/v3/component-report (#95, #96).
+// the minimized coordinate sent to POST /api/v3/component-report (#95, #96, #97).
 func validateAndMapPURL(rawPURL string) (canonicalPURL, queryCoord string, err error) {
-	canonical, version, err := adapter.ValidateVersionedPURL(AdapterSlug, rawPURL, supportedPURLTypes)
+	canonical, _, err := adapter.ValidateVersionedPURL(AdapterSlug, rawPURL, supportedPURLTypes)
 	if err != nil {
 		return "", "", err
 	}
-	// Sonatype Guide's OSS Index Compatibility API does not evaluate version
-	// ranges in PURL coordinates and treats range syntax as a literal string (#95).
-	// Allow '~' inside exact Debian/RPM/pre-release versions (e.g. 1.2.3~rc1)
-	// while rejecting leading '~' or '^' semver ranges and comparator/bracket ranges.
-	decodedVer, _ := url.PathUnescape(version)
-	if strings.HasPrefix(decodedVer, "~") || strings.HasPrefix(decodedVer, "^") || strings.ContainsAny(decodedVer, "<>=*,[]() ") {
-		return "", "", &adapter.AdapterError{
-			Code:      adapter.ErrUnsupportedInput,
-			Message:   "ossindex adapter requires an exact package version, not a version range",
-			Retryable: false,
-		}
-	}
-
 	return canonical, minimizeCoordinate(canonical), nil
 }
 
