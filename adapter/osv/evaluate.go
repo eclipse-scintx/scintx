@@ -7,12 +7,9 @@ package osv
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/eclipse-scintx/scintx/adapter"
-	"github.com/eclipse-scintx/scintx/api"
 )
 
 // This file implements Evaluate, stub-record hydration via GET /v1/vulns/{id},
@@ -30,7 +27,7 @@ const (
 // records via GET /v1/vulns/{id} whenever query entries are stubs (#94), and
 // returns a normalized ProviderReport for the requested capabilities.
 func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (*adapter.EvaluationResult, error) {
-	canonicalPURL, err := validateSupportedPURL(req.Artifact.PURL)
+	canonicalPURL, _, err := adapter.ValidateVersionedPURL(AdapterSlug, req.Artifact.PURL, supportedPURLTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -154,42 +151,4 @@ func (a *Adapter) hydrateRecords(
 		hydrated = append(hydrated, v)
 	}
 	return hydrated, fetchedRaw, nil
-}
-
-// validateSupportedPURL verifies that the input PURL is present, canonical,
-// includes a package version, and belongs to a supported OSV ecosystem.
-func validateSupportedPURL(rawPURL string) (string, error) {
-	trimmed := strings.TrimSpace(rawPURL)
-	if trimmed == "" {
-		return "", &adapter.AdapterError{
-			Code:      adapter.ErrUnsupportedInput,
-			Message:   "osv adapter requires a package PURL",
-			Retryable: false,
-		}
-	}
-	canonical, err := api.CanonicalPurl(trimmed)
-	if err != nil {
-		return "", &adapter.AdapterError{
-			Code:      adapter.ErrUnsupportedInput,
-			Message:   fmt.Sprintf("invalid package PURL: %v", err),
-			Retryable: false,
-			Cause:     err,
-		}
-	}
-	purlType, err := api.PurlType(canonical)
-	if err != nil || !slices.Contains(supportedPURLTypes, adapter.Ecosystem(purlType)) {
-		return "", &adapter.AdapterError{
-			Code:      adapter.ErrUnsupportedInput,
-			Message:   fmt.Sprintf("osv adapter does not support PURL ecosystem %q", purlType),
-			Retryable: false,
-		}
-	}
-	if _, hasVersion, err := api.PurlVersion(canonical); err != nil || !hasVersion {
-		return "", &adapter.AdapterError{
-			Code:      adapter.ErrUnsupportedInput,
-			Message:   "osv adapter requires a versioned package PURL",
-			Retryable: false,
-		}
-	}
-	return canonical, nil
 }

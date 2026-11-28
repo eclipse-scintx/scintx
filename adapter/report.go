@@ -4,6 +4,8 @@
 
 package adapter
 
+import "errors"
+
 // This file defines the normalized ProviderReport, CapabilityReport,
 // CheckReport, Finding, FindingType, and provenance metadata keys returned by
 // provider adapters (#68, #70, #72, #98).
@@ -73,6 +75,42 @@ func NewCompletedCapabilityReport(check Check, findings []Finding) CapabilityRep
 	}
 }
 
+// NewErroredProviderReport builds a normalized ProviderReport recording full
+// provider provenance (providerRunId, provider slug, adapterVersion, and
+// errored capability/check states) whenever an adapter run fails (#72, #74, #98).
+func NewErroredProviderReport(desc AdapterDescriptor, providerRunID string, err error) ProviderReport {
+	var ae *AdapterError
+	if errors.As(err, &ae) && ae != nil {
+		ae = &AdapterError{Code: ae.Code, Message: ae.Message, Retryable: ae.Retryable}
+	} else {
+		ae = &AdapterError{Code: ErrUpstreamUnavailable, Message: "provider execution failed"}
+	}
+
+	caps := make(map[Capability]CapabilityReport, len(desc.Capabilities))
+	for capName, capDesc := range desc.Capabilities {
+		checks := make(map[Check]CheckReport, len(capDesc.Checks))
+		for _, chk := range capDesc.Checks {
+			checks[chk] = CheckReport{
+				Status:   CheckStatusErrored,
+				Error:    ae,
+				Findings: []Finding{},
+			}
+		}
+		caps[capName] = CapabilityReport{
+			Status: CapabilityStatusErrored,
+			Checks: checks,
+		}
+	}
+
+	return ProviderReport{
+		SchemaVersion:  SchemaVersionV1,
+		ProviderRunID:  providerRunID,
+		Provider:       desc.Slug,
+		AdapterVersion: desc.AdapterVersion,
+		Capabilities:   caps,
+	}
+}
+
 // Severity represents the normalized severity level of a finding.
 type Severity string
 
@@ -99,20 +137,30 @@ const (
 
 // Standardized Finding.Metadata and raw evidence keys shared across adapters (#98).
 const (
-	MetaKeySchemaVersion    = "schemaVersion"
-	MetaKeyPublished        = "published"
-	MetaKeyModified         = "modified"
-	MetaKeyWithdrawn        = "withdrawn"
-	MetaKeyRelated          = "related"
-	MetaKeyUpstream         = "upstream"
-	MetaKeySeverity         = "severity"
-	MetaKeyAffected         = "affected"
-	MetaKeyReferences       = "references"
-	MetaKeyDatabaseSpecific = "databaseSpecific"
+	MetaKeySchemaVersion        = "schemaVersion"
+	MetaKeyPublished            = "published"
+	MetaKeyModified             = "modified"
+	MetaKeyWithdrawn            = "withdrawn"
+	MetaKeyRelated              = "related"
+	MetaKeyUpstream             = "upstream"
+	MetaKeySeverity             = "severity"
+	MetaKeyAffected             = "affected"
+	MetaKeyReferences           = "references"
+	MetaKeyDatabaseSpecific     = "databaseSpecific"
+	MetaKeyDisplayName          = "displayName"
+	MetaKeyCVE                  = "cve"
+	MetaKeyCWE                  = "cwe"
+	MetaKeyCVSSScore            = "cvssScore"
+	MetaKeyCVSSVector           = "cvssVector"
+	MetaKeyVersionRanges        = "versionRanges"
+	MetaKeyComponentCoordinates = "componentCoordinates"
+	MetaKeyComponentReference   = "componentReference"
+	MetaKeyComponentDescription = "componentDescription"
 
 	EvidenceKeyPages           = "pages"
 	EvidenceKeyCount           = "count"
 	EvidenceKeyHydratedRecords = "hydratedRecords"
+	EvidenceKeyComponents      = "components"
 )
 
 // Finding represents an individual security issue or observation returned by a provider.
