@@ -18,7 +18,7 @@ const MaxPurlLength = 2048
 // missing, so pkg:github/Org/Repo and pkg:github/org/repo did not match.
 var namespaceLowerTypes = map[string]bool{
 	"bitbucket": true, "composer": true, "deb": true, "gem": true,
-	"github": true, "golang": true, "hex": true, "npm": true,
+	"github": true, "hex": true, "npm": true,
 	"pypi": true, "rpm": true,
 }
 
@@ -35,16 +35,6 @@ type parsedPurl struct {
 	Version    string
 	Qualifiers map[string]string
 	Subpath    string
-}
-
-func hasControlOrSpace(s string) bool {
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c <= 0x20 || c == 0x7f {
-			return true
-		}
-	}
-	return false
 }
 
 func parsePurl(purl string) (*parsedPurl, error) {
@@ -97,6 +87,15 @@ func parsePurl(purl string) (*parsedPurl, error) {
 	}
 	if p.Name, err = normalizePurlPath(p.Name, "name", lower); err != nil {
 		return nil, err
+	}
+	if typ == "pypi" {
+		// Per the PURL specification for pypi (PEP 503), underscores normalize to dashes (#96).
+		p.Name = strings.ReplaceAll(p.Name, "_", "-")
+	} else if typ == "vscode-extension" && p.Namespace == "" && strings.Count(p.Name, ".") == 1 {
+		// Split dot-separated "<publisher>.<name>" into PURL namespace/name (#96).
+		if pub, ext, ok := strings.Cut(p.Name, "."); ok && pub != "" && ext != "" {
+			p.Namespace, p.Name = pub, ext
+		}
 	}
 	if p.Name == "" || strings.Contains(p.Name, "/") {
 		return nil, fmt.Errorf("invalid purl package coordinates in %s", purl)

@@ -110,10 +110,11 @@ func TestCheckAvailabilityStates(t *testing.T) {
 func TestEvaluateErrorClassification(t *testing.T) {
 	a := NewAdapter(Config{}, nil)
 
-	// Unsupported input forms: empty PURL, unversioned PURL, unsupported ecosystem, unsupported capability.
+	// Unsupported input forms: empty PURL, unversioned PURL, missing namespace, unsupported ecosystem, unsupported capability.
 	badReqs := []adapter.EvaluationRequest{
 		{Artifact: adapter.ArtifactInput{}, RequestedCapabilities: []adapter.Capability{adapter.CapabilityVulnerabilities}},
 		{Artifact: adapter.ArtifactInput{PURL: "pkg:npm/lodash"}, RequestedCapabilities: []adapter.Capability{adapter.CapabilityVulnerabilities}},
+		{Artifact: adapter.ArtifactInput{PURL: "pkg:maven/commons-text@1.9"}, RequestedCapabilities: []adapter.Capability{adapter.CapabilityVulnerabilities}},
 		{Artifact: adapter.ArtifactInput{PURL: "pkg:generic/foo@1.0.0"}, RequestedCapabilities: []adapter.Capability{adapter.CapabilityVulnerabilities}},
 		{Artifact: adapter.ArtifactInput{PURL: "pkg:npm/lodash@4.17.20"}, RequestedCapabilities: []adapter.Capability{adapter.CapabilityLicenses}},
 	}

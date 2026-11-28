@@ -93,5 +93,31 @@ func ValidateVersionedPURL(
 			Message: providerSlug + " adapter requires a versioned package PURL",
 		}
 	}
+	if requiresPURLNamespace(Ecosystem(purlType)) && !hasPURLNamespace(canonical) {
+		return "", "", &AdapterError{
+			Code:    ErrUnsupportedInput,
+			Message: fmt.Sprintf("%s adapter requires a PURL namespace for ecosystem %q", providerSlug, purlType),
+		}
+	}
 	return canonical, ver, nil
+}
+
+// requiresPURLNamespace reports whether the PURL specification requires a
+// namespace segment (e.g. groupId, vendor, distro, or publisher) for eco (#96).
+func requiresPURLNamespace(eco Ecosystem) bool {
+	switch eco {
+	case EcosystemMaven, EcosystemComposer, EcosystemDeb, EcosystemAPK,
+		EcosystemRPM, EcosystemSwift, EcosystemVSCodeExtension:
+		return true
+	default:
+		return false
+	}
+}
+
+func hasPURLNamespace(canonical string) bool {
+	coord := canonical
+	if at := strings.LastIndex(coord, "@"); at >= 0 {
+		coord = coord[:at]
+	}
+	return strings.Count(coord, "/") >= 2
 }

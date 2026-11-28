@@ -13,7 +13,7 @@ import (
 )
 
 // This file implements Evaluate, stub-record hydration via GET /v1/vulns/{id},
-// and PURL input validation for the OSV adapter (#94, #96).
+// and PURL/OpenVSX/Go coordinate fallback mapping for the OSV adapter (#94, #96).
 
 const (
 	// malwareIDPrefix identifies OSV malicious-package advisories (MAL-*).
@@ -57,22 +57,19 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 		return nil, err
 	}
 
-	// 2. Fall back to the Open VSX ecosystem query when a pkg:vscode-extension PURL
-	// returned zero direct matches (#96).
-	if len(vulns) == 0 && strings.HasPrefix(canonicalPURL, vscodeExtensionPURLPrefix) {
-		if extName, version, ok := parseVSCodeExtensionPURL(canonicalPURL); ok {
-			fallbackVulns, fallbackPages, err := a.queryAllPages(ctx, QueryRequest{
-				Package: &PackageQuery{
-					Ecosystem: openVSXEcosystem,
-					Name:      extName,
-				},
-				Version: version,
-			})
-			if err != nil {
-				return nil, err
+	// 2. Fall back to ecosystem+name+version queries when a VS Code / Open VSX
+	// extension PURL or mixed-case Go module PURL returned zero direct matches (#96).
+	if len(vulns) == 0 {
+		for _, fbReq := range buildFallbackQueries(canonicalPURL) {
+			fbVulns, fbPages, fbErr := a.queryAllPages(ctx, fbReq)
+			if fbErr != nil {
+				return nil, fbErr
 			}
-			vulns = fallbackVulns
-			rawPages = append(rawPages, fallbackPages...)
+			rawPages = append(rawPages, fbPages...)
+			if len(fbVulns) > 0 {
+				vulns = fbVulns
+				break
+			}
 		}
 	}
 
@@ -119,6 +116,35 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 		},
 		RawProviderResponse: rawEvidence,
 	}, nil
+}
+
+// buildFallbackQueries returns ordered ecosystem+name+version fallback queries
+// for PURLs whose upstream OSV records omit package.purl (VS Code / Open VSX)
+// or preserve mixed-case Go module paths (#96).
+func buildFallbackQueries(canonicalPURL string) []QueryRequest {
+	if extName, ver, ecosystems, ok := parseVSCodeExtensionPURL(canonicalPURL); ok {
+		names := []string{extName}
+		if lower := strings.ToLower(extName); lower != extName {
+			names = append(names, lower)
+		}
+		out := make([]QueryRequest, 0, len(ecosystems)*len(names))
+		for _, eco := range ecosystems {
+			for _, name := range names {
+				out = append(out, QueryRequest{
+					Package: &PackageQuery{Ecosystem: eco, Name: name},
+					Version: ver,
+				})
+			}
+		}
+		return out
+	}
+	if modPath, ver, ok := parseMixedCaseGolangPURL(canonicalPURL); ok {
+		return []QueryRequest{{
+			Package: &PackageQuery{Ecosystem: goOSVEcosystem, Name: modPath},
+			Version: ver,
+		}}
+	}
+	return nil
 }
 
 // hydrateRecords ensures every Vulnerability returned by a query contains the

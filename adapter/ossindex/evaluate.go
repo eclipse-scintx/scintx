@@ -94,18 +94,20 @@ func validateAndMapPURL(rawPURL string) (canonicalPURL, queryCoord string, err e
 	return canonical, minimizeCoordinate(canonical), nil
 }
 
-// minimizeCoordinate strips ?qualifiers and #subpath from a canonical PURL and
+// minimizeCoordinate strips ?qualifiers and #subpath from a canonical PURL,
 // removes a leading 'v' before a digit in the @version segment (commonly used
-// in Go and Composer PURLs) so OSS Index matches the exact version (#96).
+// in Go and Composer PURLs), and restores '%2B' to '+' in build metadata so
+// OSS Index matches the exact upstream version (#96).
 func minimizeCoordinate(canonical string) string {
 	coord := canonical
 	if i := strings.IndexAny(coord, "?#"); i >= 0 {
 		coord = coord[:i]
 	}
-	if at := strings.LastIndex(coord, "@"); at >= 0 && at+2 < len(coord) {
-		if (coord[at+1] == 'v' || coord[at+1] == 'V') && coord[at+2] >= '0' && coord[at+2] <= '9' {
+	if at := strings.LastIndex(coord, "@"); at >= 0 {
+		if at+2 < len(coord) && (coord[at+1] == 'v' || coord[at+1] == 'V') && coord[at+2] >= '0' && coord[at+2] <= '9' {
 			coord = coord[:at+1] + coord[at+2:]
 		}
+		coord = coord[:at+1] + strings.ReplaceAll(coord[at+1:], "%2B", "+")
 	}
 	return coord
 }
