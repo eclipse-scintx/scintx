@@ -132,10 +132,16 @@ func TestComponentReportAndGuidePATBasicAuth(t *testing.T) {
 // TestExplicitBasicAuthAndCoordinateMinimization verifies explicit Username+Token
 // Basic Auth, Go '@v' prefix stripping, and '~' pre-release version handling (#95, #96).
 func TestExplicitBasicAuthAndCoordinateMinimization(t *testing.T) {
-	var gotUser, gotPass string
+	var gotMethod, gotPath, gotUser, gotPass string
 	var gotReq ComponentReportRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
 		gotUser, gotPass, _ = r.BasicAuth()
+		if r.URL.Path == versionEndpoint {
+			_, _ = w.Write([]byte(`{"version":"1-SNAPSHOT"}`))
+			return
+		}
 		_ = json.NewDecoder(r.Body).Decode(&gotReq)
 		_, _ = w.Write([]byte(`[{"coordinates":"pkg:golang/golang.org/x/text@0.3.7","vulnerabilities":[]}]`))
 	}))
@@ -148,6 +154,9 @@ func TestExplicitBasicAuthAndCoordinateMinimization(t *testing.T) {
 	}, srv.Client())
 	if st := basicAdapter.CheckAvailability(context.Background()); st.State != adapter.StateReady || !st.Available {
 		t.Fatalf("expected ready with Username+Token, got %+v", st)
+	}
+	if gotMethod != http.MethodGet || gotPath != versionEndpoint {
+		t.Fatalf("expected CheckAvailability to probe GET %s, got %s %s", versionEndpoint, gotMethod, gotPath)
 	}
 	if gotUser != "dev@example.com" || gotPass != "legacy-or-pat-token" {
 		t.Fatalf("expected explicit Basic Auth user/token, got (%q, %q)", gotUser, gotPass)

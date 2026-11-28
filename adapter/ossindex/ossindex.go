@@ -27,7 +27,6 @@
 package ossindex
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"strings"
@@ -57,9 +56,6 @@ const (
 	// is set without an explicit Config.Username. Sonatype Guide ignores the Basic
 	// Auth username field when authenticating with a Guide PAT (#95).
 	defaultPATUsername = "guide"
-
-	// probePURL is the canonical PURL sent during CheckAvailability probes.
-	probePURL = "pkg:npm/lodash@4.17.21"
 )
 
 // supportedPURLTypes lists the Package URL ecosystems supported by Sonatype
@@ -153,7 +149,8 @@ func (a *Adapter) Descriptor() adapter.AdapterDescriptor {
 }
 
 // CheckAvailability validates the adapter's base URL, required credentials,
-// and upstream reachability against POST /api/v3/component-report (#70, #73, #95).
+// and upstream reachability against GET /api/v3/version without querying any
+// package coordinate (#70, #73, #95).
 func (a *Adapter) CheckAvailability(ctx context.Context) adapter.AvailabilityStatus {
 	if status, ok := adapter.ValidateBaseURL("OSS Index", a.cfg.BaseURL); !ok {
 		return status
@@ -166,15 +163,13 @@ func (a *Adapter) CheckAvailability(ctx context.Context) adapter.AvailabilitySta
 		)
 	}
 
-	probeBody := []byte(`{"coordinates":["` + probePURL + `"]}`)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.BaseURL+componentReportEndpoint, bytes.NewReader(probeBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.cfg.BaseURL+versionEndpoint, nil)
 	if err != nil {
 		return adapter.NewUnconfiguredStatus(
 			adapter.ReasonInvalidConfiguration,
 			"failed to construct OSS Index availability probe request",
 		)
 	}
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	a.applyAuth(req)
 

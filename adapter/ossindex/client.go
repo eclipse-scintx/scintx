@@ -24,6 +24,10 @@ const (
 	// by Sonatype Guide's OSS Index Compatibility API (#95).
 	componentReportEndpoint = "/api/v3/component-report"
 
+	// versionEndpoint is the OSS Index v3 status/version path used by
+	// CheckAvailability to verify reachability and credentials without querying a package.
+	versionEndpoint = "/api/v3/version"
+
 	// maxResponseBytes bounds the size of a single upstream OSS Index HTTP response
 	// body (16 MiB) so a misbehaving server cannot exhaust gateway memory.
 	maxResponseBytes = 16 * 1024 * 1024
