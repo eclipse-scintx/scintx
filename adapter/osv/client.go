@@ -128,6 +128,21 @@ func (a *Adapter) doJSONRequest(
 	endpoint string,
 	reqBody []byte,
 ) ([]byte, error) {
+	if a.cfg.RequireAuth && a.cfg.BearerToken == "" {
+		return nil, &adapter.AdapterError{
+			Code:      adapter.ErrAuthFailed,
+			Message:   "OSV bearer token is required but not configured",
+			Retryable: false,
+		}
+	}
+	if st, ok := adapter.ValidateBaseURL("OSV", a.cfg.BaseURL); !ok {
+		return nil, &adapter.AdapterError{
+			Code:      adapter.ErrUpstreamUnavailable,
+			Message:   st.Message,
+			Retryable: false,
+		}
+	}
+
 	var bodyReader io.Reader
 	if reqBody != nil {
 		bodyReader = bytes.NewReader(reqBody)

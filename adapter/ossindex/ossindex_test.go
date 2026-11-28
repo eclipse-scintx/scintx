@@ -173,8 +173,15 @@ func TestExplicitBasicAuthAndCoordinateMinimization(t *testing.T) {
 		t.Fatalf("expected '@v' prefix stripped in upstream coordinate, got %v", gotReq.Coordinates)
 	}
 
-	// Verify exact pre-release version containing '~' in the middle is accepted.
+	// Verify exact pre-release version containing '~' and '+incompatible' build metadata are mapped cleanly.
 	if _, coord, err := validateAndMapPURL("pkg:rpm/fedora/openssl@3.0.8~rc1"); err != nil || coord != "pkg:rpm/fedora/openssl@3.0.8~rc1" {
 		t.Fatalf("expected exact '~rc1' version to be accepted, got coord=%q err=%v", coord, err)
+	}
+	if _, coord, err := validateAndMapPURL("pkg:golang/github.com/dgrijalva/jwt-go@v3.2.0+incompatible"); err != nil || coord != "pkg:golang/github.com/dgrijalva/jwt-go@3.2.0+incompatible" {
+		t.Fatalf("expected '@v' stripped and '+' preserved in coordinate, got coord=%q err=%v", coord, err)
+	}
+	// The 'v' prefix is stripped for Go and Composer only (#96).
+	if _, coord, err := validateAndMapPURL("pkg:cargo/v8@v8"); err != nil || coord != "pkg:cargo/v8@v8" {
+		t.Fatalf("expected '@v8' kept for cargo, got coord=%q err=%v", coord, err)
 	}
 }
