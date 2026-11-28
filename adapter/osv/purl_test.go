@@ -24,6 +24,27 @@ func fallbackFor(t *testing.T, rawPURL string) []QueryRequest {
 	return buildFallbackQueries(mapOSVQueryPURL(canonical))
 }
 
+// TestMapOSVQueryPURL verifies the distro-typed PURL aliases, including the
+// form that already repeats the distro as a namespace (#96).
+func TestMapOSVQueryPURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"pkg:debian/openssl@1.1.1k-1":          "pkg:deb/debian/openssl@1.1.1k-1",
+		"pkg:debian/debian/openssl@1.1.1k-1":   "pkg:deb/debian/openssl@1.1.1k-1",
+		"pkg:ubuntu/openssl@1.1.1f":            "pkg:deb/ubuntu/openssl@1.1.1f",
+		"pkg:alpine/openssl@1.1.1k-r0":         "pkg:apk/alpine/openssl@1.1.1k-r0",
+		"pkg:rocky/openssl@1.1.1k":             "pkg:rpm/rocky-linux/openssl@1.1.1k",
+		"pkg:rocky/rocky-linux/openssl@1.1.1k": "pkg:rpm/rocky-linux/openssl@1.1.1k",
+		"pkg:almalinux/openssl@1.1.1k":         "pkg:rpm/almalinux/openssl@1.1.1k",
+		// Standard PURL types pass through unchanged.
+		"pkg:deb/debian/openssl@1.1.1k-1": "pkg:deb/debian/openssl@1.1.1k-1",
+		"pkg:npm/lodash@4.17.20":          "pkg:npm/lodash@4.17.20",
+	} {
+		if got := mapOSVQueryPURL(in); got != want {
+			t.Fatalf("mapOSVQueryPURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestVSCodeEcosystemFromRepositoryURL verifies that the registry URL is
 // compared by host, without regard to case, before it becomes the OSV
 // ecosystem string. OSV compares that string exactly (#96).

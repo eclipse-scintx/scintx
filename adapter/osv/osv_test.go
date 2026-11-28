@@ -162,7 +162,8 @@ func TestOpenVSXAndGolangFallbackMapping(t *testing.T) {
 			Artifact:              adapter.ArtifactInput{PURL: purl},
 			RequestedCapabilities: []adapter.Capability{adapter.CapabilityThreats},
 		})
-		if err != nil || len(queries) < 2 || len(res.Report.Capabilities[adapter.CapabilityThreats].Checks[adapter.CheckMalware].Findings) != 1 {
+		// VS Code PURLs skip the PURL query, so at least one name query is sent.
+		if err != nil || len(queries) < 1 || len(res.Report.Capabilities[adapter.CapabilityThreats].Checks[adapter.CheckMalware].Findings) != 1 {
 			t.Fatalf("%s: err=%v queries=%d", purl, err, len(queries))
 		}
 	}
@@ -172,7 +173,7 @@ func TestOpenVSXAndGolangFallbackMapping(t *testing.T) {
 	if res, err := a.Evaluate(context.Background(), adapter.EvaluationRequest{
 		Artifact:              adapter.ArtifactInput{PURL: "pkg:vscode-extension/acme/theme-pro@1.0.2"},
 		RequestedCapabilities: []adapter.Capability{adapter.CapabilityThreats},
-	}); err != nil || len(queries) != 2 || queries[1].Package.Ecosystem != vscodeEcosystem || len(res.Report.Capabilities[adapter.CapabilityThreats].Checks[adapter.CheckMalware].Findings) != 0 {
+	}); err != nil || len(queries) != 1 || queries[0].Package.PURL != "" || queries[0].Package.Ecosystem != vscodeEcosystem || len(res.Report.Capabilities[adapter.CapabilityThreats].Checks[adapter.CheckMalware].Findings) != 0 {
 		t.Fatalf("expected unqualified pkg:vscode-extension to query %q, got queries=%+v err=%v", vscodeEcosystem, queries, err)
 	}
 
