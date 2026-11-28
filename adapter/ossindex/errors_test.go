@@ -108,11 +108,12 @@ func TestEvaluateErrorClassification(t *testing.T) {
 		t.Fatalf("expected non-retryable ErrAuthFailed without credentials, got %v", err)
 	}
 
-	// Unsupported input forms: empty PURL, unversioned PURL, version range, unsupported ecosystem, unsupported capability.
+	// Unsupported input forms: empty PURL, unversioned PURL, missing namespace, version range, unsupported ecosystem, unsupported capability.
 	a := NewAdapter(Config{Token: "pat"}, nil)
 	badReqs := []adapter.EvaluationRequest{
 		{Artifact: adapter.ArtifactInput{}, RequestedCapabilities: []adapter.Capability{adapter.CapabilityVulnerabilities}},
 		{Artifact: adapter.ArtifactInput{PURL: "pkg:npm/lodash"}, RequestedCapabilities: []adapter.Capability{adapter.CapabilityVulnerabilities}},
+		{Artifact: adapter.ArtifactInput{PURL: "pkg:maven/commons-text@1.9"}, RequestedCapabilities: []adapter.Capability{adapter.CapabilityVulnerabilities}},
 		{Artifact: adapter.ArtifactInput{PURL: "pkg:npm/lodash@%5B4.0.0%2C4.17.20%29"}, RequestedCapabilities: []adapter.Capability{adapter.CapabilityVulnerabilities}},
 		{Artifact: adapter.ArtifactInput{PURL: "pkg:generic/foo@1.0.0"}, RequestedCapabilities: []adapter.Capability{adapter.CapabilityVulnerabilities}},
 		{Artifact: adapter.ArtifactInput{PURL: "pkg:npm/lodash@4.17.20"}, RequestedCapabilities: []adapter.Capability{adapter.CapabilityLicenses}},

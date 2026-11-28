@@ -32,6 +32,16 @@ func isPurlUnreserved(c byte) bool {
 		c == '-' || c == '.' || c == '_' || c == '~'
 }
 
+func hasControlOrSpace(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c <= 0x20 || c == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
 // decodePurlComponent percent-decodes one purl component. Invalid escapes
 // fail closed. A decoded space or control character fails closed too: the
 // raw-string check cannot see one that was still percent-encoded.

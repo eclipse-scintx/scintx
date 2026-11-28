@@ -94,18 +94,26 @@ func validateAndMapPURL(rawPURL string) (canonicalPURL, queryCoord string, err e
 	return canonical, minimizeCoordinate(canonical), nil
 }
 
-// minimizeCoordinate strips ?qualifiers and #subpath from a canonical PURL and
-// removes a leading 'v' before a digit in the @version segment (commonly used
-// in Go and Composer PURLs) so OSS Index matches the exact version (#96).
+// minimizeCoordinate adapts a canonical SCINTX PURL for OSS Index where the
+// upstream /api/v3/component-report endpoint strays from the PURL spec (#96):
+//  1. OSS Index fails to match coordinates containing ?qualifiers or #subpath.
+//  2. OSS Index indexes Go/Composer versions without a leading 'v' prefix.
+//  3. OSS Index matches '+' in build metadata literally rather than '%2B'.
+//
+// The 'v' prefix is stripped for Go and Composer only. It used to be stripped
+// for every ecosystem, which changed real versions elsewhere: for example
+// "pkg:cargo/v8@v8" was sent as "@8".
 func minimizeCoordinate(canonical string) string {
 	coord := canonical
 	if i := strings.IndexAny(coord, "?#"); i >= 0 {
 		coord = coord[:i]
 	}
-	if at := strings.LastIndex(coord, "@"); at >= 0 && at+2 < len(coord) {
-		if (coord[at+1] == 'v' || coord[at+1] == 'V') && coord[at+2] >= '0' && coord[at+2] <= '9' {
+	stripV := strings.HasPrefix(coord, "pkg:golang/") || strings.HasPrefix(coord, "pkg:composer/")
+	if at := strings.LastIndex(coord, "@"); at >= 0 {
+		if stripV && at+2 < len(coord) && (coord[at+1] == 'v' || coord[at+1] == 'V') && coord[at+2] >= '0' && coord[at+2] <= '9' {
 			coord = coord[:at+1] + coord[at+2:]
 		}
+		coord = coord[:at+1] + strings.ReplaceAll(coord[at+1:], "%2B", "+")
 	}
 	return coord
 }

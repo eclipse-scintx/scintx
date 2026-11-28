@@ -5,19 +5,14 @@
 package osv
 
 import (
-	"net/url"
 	"strings"
 
 	"github.com/eclipse-scintx/scintx/adapter"
 )
 
-// This file maps OSV records and package coordinates into normalized SCINTX
-// Findings while preserving identifiers, relationships, affected package
-// context, and provider provenance (#94, #96, #98).
-
-// openVSXEcosystem is the ecosystem string OSV uses for Open VSX / VS Code
-// extension advisories when a direct PURL lookup returns no matches.
-const openVSXEcosystem = "VSCode:https://open-vsx.org"
+// This file maps OSV records into normalized SCINTX Findings while preserving
+// identifiers, relationships, affected package context, and provider provenance
+// (#94, #98).
 
 // normalizeFinding converts a full OSV Vulnerability record into a normalized
 // SCINTX adapter.Finding for the submitted artifact PURL.
@@ -26,21 +21,17 @@ func normalizeFinding(v Vulnerability, artifactPURL string, isMalware bool) adap
 	if isMalware {
 		findingType = adapter.FindingTypeMalware
 	}
-
 	title := strings.TrimSpace(v.Summary)
 	if title == "" {
 		title = v.ID
 	}
-
 	return adapter.Finding{
 		ID:          v.ID,
 		Type:        findingType,
 		Severity:    extractSeverity(v),
 		Title:       title,
 		Description: v.Details,
-		Artifact: &adapter.ArtifactInput{
-			PURL: artifactPURL,
-		},
+		Artifact:    &adapter.ArtifactInput{PURL: artifactPURL},
 		Identifiers: collectIdentifiers(v),
 		Metadata:    buildFindingMetadata(v),
 	}
@@ -49,9 +40,7 @@ func normalizeFinding(v Vulnerability, artifactPURL string, isMalware bool) adap
 // collectIdentifiers returns a deduplicated list of advisory identifiers
 // starting with the primary OSV ID followed by aliases and upstream IDs.
 func collectIdentifiers(v Vulnerability) []string {
-	ids := make([]string, 0, 1+len(v.Aliases)+len(v.Upstream))
-	ids = append(ids, v.ID)
-	ids = append(ids, v.Aliases...)
+	ids := append([]string{v.ID}, v.Aliases...)
 	ids = append(ids, v.Upstream...)
 	return adapter.DeduplicateStrings(ids...)
 }
@@ -95,34 +84,4 @@ func buildFindingMetadata(v Vulnerability) map[string]any {
 		return nil
 	}
 	return meta
-}
-
-// parseVSCodeExtensionPURL extracts "<publisher>.<name>" and "<version>" from
-// a canonical "pkg:vscode-extension/<publisher>/<name>@<version>" PURL (#96).
-func parseVSCodeExtensionPURL(purl string) (extName, version string, ok bool) {
-	if !strings.HasPrefix(purl, vscodeExtensionPURLPrefix) {
-		return "", "", false
-	}
-	rest := strings.TrimPrefix(purl, vscodeExtensionPURLPrefix)
-	if i := strings.IndexAny(rest, "?#"); i >= 0 {
-		rest = rest[:i]
-	}
-	if at := strings.Index(rest, "@"); at >= 0 {
-		rawVer, err := url.PathUnescape(rest[at+1:])
-		if err != nil || rawVer == "" {
-			return "", "", false
-		}
-		version = rawVer
-		rest = rest[:at]
-	}
-	parts := strings.SplitN(rest, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.Contains(parts[1], "/") {
-		return "", "", false
-	}
-	pub, err1 := url.PathUnescape(parts[0])
-	name, err2 := url.PathUnescape(parts[1])
-	if err1 != nil || err2 != nil || pub == "" || name == "" {
-		return "", "", false
-	}
-	return pub + "." + name, version, true
 }
