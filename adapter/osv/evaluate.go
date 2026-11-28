@@ -143,7 +143,16 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 	if len(hydratedRaw) > 0 {
 		evidenceMap[adapter.EvidenceKeyHydratedRecords] = hydratedRaw
 	}
-	rawEvidence, _ := json.Marshal(evidenceMap)
+	// All values in evidenceMap are JSON-safe types, so this should never fail.
+	// We handle the error explicitly rather than discarding it with _ (#98).
+	rawEvidence, err := json.Marshal(evidenceMap)
+	if err != nil {
+		return nil, &adapter.AdapterError{
+			Code:    adapter.ErrMalformedResponse,
+			Message: "failed to encode OSV evidence map",
+			Cause:   err,
+		}
+	}
 
 	return &adapter.EvaluationResult{
 		Report: adapter.ProviderReport{

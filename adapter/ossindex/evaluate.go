@@ -52,10 +52,19 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 		),
 	}
 
-	rawEvidence, _ := json.Marshal(map[string]any{
+	// All values in the evidence map are JSON-safe types, so this should never fail.
+	// We handle the error explicitly rather than discarding it with _ (#98).
+	rawEvidence, err := json.Marshal(map[string]any{
 		adapter.EvidenceKeyComponents: json.RawMessage(rawBody),
 		adapter.EvidenceKeyCount:      len(findings),
 	})
+	if err != nil {
+		return nil, &adapter.AdapterError{
+			Code:    adapter.ErrMalformedResponse,
+			Message: "failed to encode OSS Index evidence map",
+			Cause:   err,
+		}
+	}
 
 	return &adapter.EvaluationResult{
 		Report: adapter.ProviderReport{
