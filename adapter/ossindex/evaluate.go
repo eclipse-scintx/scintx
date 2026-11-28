@@ -85,13 +85,18 @@ func validateAndMapPURL(rawPURL string) (canonicalPURL, queryCoord string, err e
 //  1. OSS Index fails to match coordinates containing ?qualifiers or #subpath.
 //  2. OSS Index indexes Go/Composer versions without a leading 'v' prefix.
 //  3. OSS Index matches '+' in build metadata literally rather than '%2B'.
+//
+// The 'v' prefix is stripped for Go and Composer only. It used to be stripped
+// for every ecosystem, which changed real versions elsewhere: for example
+// "pkg:cargo/v8@v8" was sent as "@8".
 func minimizeCoordinate(canonical string) string {
 	coord := canonical
 	if i := strings.IndexAny(coord, "?#"); i >= 0 {
 		coord = coord[:i]
 	}
+	stripV := strings.HasPrefix(coord, "pkg:golang/") || strings.HasPrefix(coord, "pkg:composer/")
 	if at := strings.LastIndex(coord, "@"); at >= 0 {
-		if at+2 < len(coord) && (coord[at+1] == 'v' || coord[at+1] == 'V') && coord[at+2] >= '0' && coord[at+2] <= '9' {
+		if stripV && at+2 < len(coord) && (coord[at+1] == 'v' || coord[at+1] == 'V') && coord[at+2] >= '0' && coord[at+2] <= '9' {
 			coord = coord[:at+1] + coord[at+2:]
 		}
 		coord = coord[:at+1] + strings.ReplaceAll(coord[at+1:], "%2B", "+")
