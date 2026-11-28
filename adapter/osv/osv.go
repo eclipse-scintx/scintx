@@ -28,9 +28,6 @@ const (
 
 	// DefaultTimeout bounds each HTTP request when no custom http.Client is supplied.
 	DefaultTimeout = 30 * time.Second
-
-	// probePURL is the canonical PURL sent during CheckAvailability probes.
-	probePURL = "pkg:npm/lodash@4.17.21"
 )
 
 // supportedPURLTypes lists the Package URL ecosystems supported by OSV.dev
@@ -51,6 +48,9 @@ var supportedPURLTypes = []adapter.Ecosystem{
 	adapter.EcosystemBioconductor,
 	adapter.EcosystemHackage,
 	adapter.EcosystemConan,
+	adapter.EcosystemDeb,
+	adapter.EcosystemAPK,
+	adapter.EcosystemRPM,
 	adapter.EcosystemDebian,
 	adapter.EcosystemAlpine,
 	adapter.EcosystemUbuntu,
@@ -121,8 +121,8 @@ func (a *Adapter) Descriptor() adapter.AdapterDescriptor {
 }
 
 // CheckAvailability validates the adapter's configuration, optional mirror
-// credentials, and upstream reachability against POST /v1/query using the
-// shared adapter availability constructors (#70, #73, #74).
+// credentials, and upstream reachability against POST /v1/querybatch with an
+// empty queries slice so no package coordinate is hardcoded (#70, #73, #74).
 func (a *Adapter) CheckAvailability(ctx context.Context) adapter.AvailabilityStatus {
 	if status, ok := adapter.ValidateBaseURL("OSV", a.cfg.BaseURL); !ok {
 		return status
@@ -135,8 +135,8 @@ func (a *Adapter) CheckAvailability(ctx context.Context) adapter.AvailabilitySta
 		)
 	}
 
-	probeBody := []byte(`{"package":{"purl":"` + probePURL + `"}}`)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.BaseURL+queryEndpoint, bytes.NewReader(probeBody))
+	probeBody := []byte(`{"queries":[]}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.BaseURL+queryBatchEndpoint, bytes.NewReader(probeBody))
 	if err != nil {
 		return adapter.NewUnconfiguredStatus(
 			adapter.ReasonInvalidConfiguration,

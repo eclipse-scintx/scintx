@@ -21,6 +21,10 @@ const (
 	// queryEndpoint is the OSV HTTP v1 package query path.
 	queryEndpoint = "/v1/query"
 
+	// queryBatchEndpoint is the OSV HTTP v1 batch query path, used with an empty
+	// queries array during CheckAvailability probes so no package is hardcoded.
+	queryBatchEndpoint = "/v1/querybatch"
+
 	// vulnsEndpointPrefix is the OSV HTTP v1 single-record retrieval path prefix.
 	vulnsEndpointPrefix = "/v1/vulns/"
 
