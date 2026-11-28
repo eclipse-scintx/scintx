@@ -13,30 +13,32 @@ import (
 
 // This file translates canonical PURLs into OSV query requests and documents
 // every place where OSV.dev strays from the PURL specification (#96).
+// The VS Code extension mapping lives in purl_vscode.go.
 
 const (
-	// vscodeEcosystem is the default OSV ecosystem string for VS Code extensions
-	// (Microsoft Visual Studio Marketplace) when repository_url is omitted (#96).
-	vscodeEcosystem           = "VSCode"
-	goOSVEcosystem            = "Go"
-	alpineOSVEcosystemPrefix  = "Alpine:"
-	qualifierRepositoryURL    = "repository_url"
-	qualifierDistro           = "distro"
-	vscodeExtensionPURLPrefix = "pkg:" + string(adapter.EcosystemVSCodeExtension) + "/"
-	golangPURLPrefix          = "pkg:" + string(adapter.EcosystemGolang) + "/"
-	apkAlpinePURLPrefix       = "pkg:apk/alpine/"
+	goOSVEcosystem           = "Go"
+	alpineOSVEcosystemPrefix = "Alpine:"
+	qualifierDistro          = "distro"
+	golangPURLPrefix         = "pkg:" + string(adapter.EcosystemGolang) + "/"
+	apkAlpinePURLPrefix      = "pkg:apk/alpine/"
 )
 
-// distroTypeToStandardPURLPrefix maps the Linux distro PURL types declared in
-// #71 ("debian", "ubuntu", "alpine", "rocky", "almalinux") onto the canonical
-// PURL type+namespace prefixes ("pkg:deb/...", "pkg:apk/...", "pkg:rpm/...")
+// standardDistroPURL is the PURL spec type and namespace of one Linux distro.
+type standardDistroPURL struct {
+	purlType  string
+	namespace string
+}
+
+// distroTypeToStandardPURL maps the Linux distro PURL types declared in #71
+// ("debian", "ubuntu", "alpine", "rocky", "almalinux") onto the canonical PURL
+// type and namespace ("pkg:deb/debian/", "pkg:apk/alpine/", "pkg:rpm/...")
 // indexed by OSV.dev (#96).
-var distroTypeToStandardPURLPrefix = map[string]string{
-	"pkg:debian/":    "pkg:deb/debian/",
-	"pkg:ubuntu/":    "pkg:deb/ubuntu/",
-	"pkg:alpine/":    "pkg:apk/alpine/",
-	"pkg:rocky/":     "pkg:rpm/rocky-linux/",
-	"pkg:almalinux/": "pkg:rpm/almalinux/",
+var distroTypeToStandardPURL = map[string]standardDistroPURL{
+	"pkg:debian/":    {"deb", "debian"},
+	"pkg:ubuntu/":    {"deb", "ubuntu"},
+	"pkg:alpine/":    {"apk", "alpine"},
+	"pkg:rocky/":     {"rpm", "rocky-linux"},
+	"pkg:almalinux/": {"rpm", "almalinux"},
 }
 
 // mapOSVQueryPURL translates non-standard distro-typed PURLs ("pkg:debian/...",
@@ -44,29 +46,41 @@ var distroTypeToStandardPURLPrefix = map[string]string{
 // the canonical PURL spec forms ("pkg:deb/...", "pkg:apk/...", "pkg:rpm/...")
 // indexed by OSV (#96).
 func mapOSVQueryPURL(canonicalPURL string) string {
-	for prefix, replacement := range distroTypeToStandardPURLPrefix {
-		if strings.HasPrefix(canonicalPURL, prefix) {
-			rest := strings.TrimPrefix(canonicalPURL, prefix)
-			ns := replacement[strings.IndexByte(replacement[4:], '/')+5:]
-			if strings.HasPrefix(rest, ns) {
-				return "pkg:" + replacement[4:strings.IndexByte(replacement[4:], '/')+5] + rest
-			}
-			return replacement + rest
+	for prefix, std := range distroTypeToStandardPURL {
+		rest, ok := strings.CutPrefix(canonicalPURL, prefix)
+		if !ok {
+			continue
 		}
+		// The caller may already repeat the distro as a namespace, for example
+		// "pkg:debian/debian/openssl". Drop it so it is not added twice.
+		rest = strings.TrimPrefix(rest, std.namespace+"/")
+		return "pkg:" + std.purlType + "/" + std.namespace + "/" + rest
 	}
 	return canonicalPURL
+}
+
+// validateOSVQueryPURL fails closed on PURLs that OSV cannot answer correctly.
+// An Alpine PURL without "?distro=" matches nothing on OSV, by PURL or by
+// name, because OSV files every Alpine advisory under a release ("Alpine:v3.14").
+// Without this check such a PURL would be reported as clean (#96).
+func validateOSVQueryPURL(queryPURL string) error {
+	rest, ok := strings.CutPrefix(queryPURL, apkAlpinePURLPrefix)
+	if !ok {
+		return nil
+	}
+	if _, rawQuery := splitPURLCoordAndQuery(rest); extractQualifier(rawQuery, qualifierDistro) != "" {
+		return nil
+	}
+	return &adapter.AdapterError{
+		Code:    adapter.ErrUnsupportedInput,
+		Message: "osv adapter requires a distro qualifier on Alpine PURLs, for example ?distro=v3.14",
+	}
 }
 
 // buildFallbackQueries returns ordered ecosystem+name+version fallback queries
 // when OSV's PURL lookup strays from the PURL specification (#96).
 func buildFallbackQueries(queryPURL string) []QueryRequest {
-	if extName, ver, eco, ok := parseVSCodeExtensionPURL(queryPURL); ok {
-		out := []QueryRequest{{Package: &PackageQuery{Ecosystem: eco, Name: extName}, Version: ver}}
-		// OSV's VSCode ecosystem performs case-sensitive package.name matching and
-		// stores a mix of original-case ("ms-python.python") and lowercase records.
-		if lower := strings.ToLower(extName); lower != extName {
-			out = append(out, QueryRequest{Package: &PackageQuery{Ecosystem: eco, Name: lower}, Version: ver})
-		}
+	if out := buildVSCodeQueries(queryPURL); out != nil {
 		return out
 	}
 	if modPath, ver, ok := parseMixedCaseGolangPURL(queryPURL); ok {
@@ -76,41 +90,6 @@ func buildFallbackQueries(queryPURL string) []QueryRequest {
 		return []QueryRequest{{Package: &PackageQuery{Ecosystem: eco, Name: pkgName}, Version: ver}}
 	}
 	return nil
-}
-
-// parseVSCodeExtensionPURL works around an OSV provider deviation from the PURL
-// spec: OSV's VSCode and VSCode:https://open-vsx.org advisories omit package.purl
-// entirely and join "<publisher>.<name>" in package.name instead of the PURL
-// spec's "<publisher>/<name>" namespace/name layout (#96).
-func parseVSCodeExtensionPURL(purl string) (extName, version, ecosystem string, ok bool) {
-	if !strings.HasPrefix(purl, vscodeExtensionPURLPrefix) {
-		return "", "", "", false
-	}
-	coord, rawQuery := splitPURLCoordAndQuery(strings.TrimPrefix(purl, vscodeExtensionPURLPrefix))
-	namePart, ver, ok := splitNameAndVersion(coord)
-	if !ok {
-		return "", "", "", false
-	}
-	parts := strings.SplitN(namePart, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.Contains(parts[1], "/") {
-		return "", "", "", false
-	}
-	pub, _ := url.PathUnescape(parts[0])
-	name, _ := url.PathUnescape(parts[1])
-	return pub + "." + name, ver, resolveVSCodeEcosystem(rawQuery), true
-}
-
-// resolveVSCodeEcosystem maps the PURL spec's optional repository_url qualifier
-// onto OSV's VSCode ecosystem naming ("VSCode" by default for Microsoft Visual
-// Studio Marketplace, or "VSCode:<repository_url>" for Open VSX) (#96).
-func resolveVSCodeEcosystem(rawQuery string) string {
-	if repoURL := extractQualifier(rawQuery, qualifierRepositoryURL); repoURL != "" {
-		repoURL = strings.TrimRight(repoURL, "/")
-		if !strings.Contains(strings.ToLower(repoURL), "marketplace.visualstudio.com") {
-			return vscodeEcosystem + ":" + repoURL
-		}
-	}
-	return vscodeEcosystem
 }
 
 // parseMixedCaseGolangPURL works around an OSV provider deviation from the PURL
@@ -167,16 +146,21 @@ func splitPURLCoordAndQuery(rest string) (coord, rawQuery string) {
 	return rest, ""
 }
 
+// splitNameAndVersion splits "<name>@<version>" and percent-decodes both parts.
+// The name must be decoded too. A canonical PURL encodes "+" as "%2B", so
+// "libstdc++" arrives as "libstdc%2B%2B". OSV stores the plain name, and an
+// encoded name never matches, which reported the package as clean (#96).
 func splitNameAndVersion(coord string) (name, version string, ok bool) {
 	at := strings.LastIndexByte(coord, '@')
 	if at <= 0 {
 		return "", "", false
 	}
-	ver, err := url.PathUnescape(coord[at+1:])
-	if err != nil || ver == "" {
+	name, nameErr := url.PathUnescape(coord[:at])
+	ver, verErr := url.PathUnescape(coord[at+1:])
+	if nameErr != nil || verErr != nil || name == "" || ver == "" {
 		return "", "", false
 	}
-	return coord[:at], ver, true
+	return name, ver, true
 }
 
 func extractQualifier(rawQuery, key string) string {

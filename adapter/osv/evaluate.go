@@ -45,14 +45,26 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 	}
 
 	queryPURL := mapOSVQueryPURL(canonicalPURL)
-	vulns, rawPages, err := a.queryAllPages(ctx, QueryRequest{
-		Package: &PackageQuery{PURL: queryPURL},
-	})
-	if err != nil {
+	// Reject PURLs that OSV would answer with a false "no findings" (#96).
+	if err = validateOSVQueryPURL(queryPURL); err != nil {
 		return nil, err
 	}
 
-	// Fall back to ecosystem+name+version queries when OSV's PURL indexing
+	// 1. Query POST /v1/query by PURL across all pages.
+	// VS Code extensions skip this step. OSV stores no package.purl for them,
+	// so a PURL query can never match and only costs one upstream request (#96).
+	var vulns []Vulnerability
+	var rawPages []json.RawMessage
+	if !strings.HasPrefix(queryPURL, vscodeExtensionPURLPrefix) {
+		vulns, rawPages, err = a.queryAllPages(ctx, QueryRequest{
+			Package: &PackageQuery{PURL: queryPURL},
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// 2. Fall back to ecosystem+name+version queries when OSV's PURL indexing
 	// strays from the PURL spec (VS Code / Open VSX extensions, mixed-case Go
 	// module paths, and Alpine APK PURLs with a ?distro= qualifier) (#96).
 	var fallbackEco, fallbackPkg string
@@ -74,11 +86,13 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 		}
 	}
 
+	// 3. Retrieve full records via GET /v1/vulns/{id} for any stub entries (#94).
 	hydratedVulns, hydratedRaw, err := a.hydrateRecords(ctx, vulns)
 	if err != nil {
 		return nil, err
 	}
 
+	// 4. Normalize records into the requested SCINTX capabilities and checks.
 	vulnFindings := make([]adapter.Finding, 0)
 	threatFindings := make([]adapter.Finding, 0)
 	for _, v := range hydratedVulns {
@@ -134,6 +148,8 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 	}, nil
 }
 
+// hydrateRecordStub returns v unchanged when it is a full record. When v is a
+// stub (only id and modified), it fetches the full record and its raw JSON.
 func hydrateRecordStub(ctx context.Context, a *Adapter, v Vulnerability) (Vulnerability, json.RawMessage, error) {
 	if isStubRecord(v) {
 		return a.GetVulnerability(ctx, v.ID)
@@ -141,6 +157,9 @@ func hydrateRecordStub(ctx context.Context, a *Adapter, v Vulnerability) (Vulner
 	return v, nil, nil
 }
 
+// hydrateRecords ensures every Vulnerability returned by a query contains the
+// full fields needed for normalization. When a query entry is a stub (only id
+// and modified), hydrateRecords fetches the full record via GET /v1/vulns/{id}.
 func (a *Adapter) hydrateRecords(ctx context.Context, vulns []Vulnerability) ([]Vulnerability, []json.RawMessage, error) {
 	hydrated := make([]Vulnerability, 0, len(vulns))
 	var fetchedRaw []json.RawMessage

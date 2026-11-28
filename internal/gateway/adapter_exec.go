@@ -67,13 +67,16 @@ func (o *Orchestrator) evaluateAdapters(ctx context.Context, sub *api.Submission
 	if len(matched) == 0 {
 		// Record provenance for every registered adapter explaining that none
 		// supported the submitted artifact input or PURL ecosystem before failing closed (#97, #98).
-		msg := fmt.Sprintf("adapter does not support %s artifacts", inputType)
+		// what names the unsupported input. Both messages below are built from
+		// it. The old code cut the second message out of the first by length,
+		// which broke silently if the wording of the first one changed.
+		what := fmt.Sprintf("%s artifacts", inputType)
 		if inputType == adapter.InputTypePURL {
 			if purlType, pErr := api.PurlType(artIn.PURL); pErr == nil && purlType != "" {
-				msg = fmt.Sprintf("adapter does not support PURL ecosystem %q", purlType)
+				what = fmt.Sprintf("PURL ecosystem %q", purlType)
 			}
 		}
-		unmatchedErr := &adapter.AdapterError{Code: adapter.ErrUnsupportedInput, Message: msg}
+		unmatchedErr := &adapter.AdapterError{Code: adapter.ErrUnsupportedInput, Message: "adapter does not support " + what}
 		sub.Reports = make([]json.RawMessage, 0, len(o.adapters))
 		for _, prov := range o.adapters {
 			desc := prov.Descriptor()
@@ -82,7 +85,7 @@ func (o *Orchestrator) evaluateAdapters(ctx context.Context, sub *api.Submission
 				sub.Reports = append(sub.Reports, json.RawMessage(raw))
 			}
 		}
-		return fmt.Errorf("no configured provider adapter supports %s", msg[len("adapter does not support "):])
+		return fmt.Errorf("no configured provider adapter supports %s", what)
 	}
 
 	rawReports := make([]json.RawMessage, len(matched))

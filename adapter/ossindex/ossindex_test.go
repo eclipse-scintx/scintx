@@ -186,4 +186,8 @@ func TestExplicitBasicAuthAndCoordinateMinimization(t *testing.T) {
 	if _, coord, err := validateAndMapPURL("pkg:golang/github.com/dgrijalva/jwt-go@v3.2.0+incompatible"); err != nil || coord != "pkg:golang/github.com/dgrijalva/jwt-go@3.2.0+incompatible" {
 		t.Fatalf("expected '@v' stripped and '+' preserved in coordinate, got coord=%q err=%v", coord, err)
 	}
+	// The 'v' prefix is stripped for Go and Composer only (#96).
+	if _, coord, err := validateAndMapPURL("pkg:cargo/v8@v8"); err != nil || coord != "pkg:cargo/v8@v8" {
+		t.Fatalf("expected '@v8' kept for cargo, got coord=%q err=%v", coord, err)
+	}
 }

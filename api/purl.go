@@ -15,6 +15,23 @@ const MaxPurlLength = 2048
 
 // namespaceLowerTypes and nameLowerTypes list the ecosystems whose PURL
 // specification mandates lowercasing the namespace and/or package name (#96).
+// github is listed so pkg:github/Org/Repo and pkg:github/org/repo match.
+//
+// Three types deliberately differ from the PURL type definitions. They were
+// checked against package-url/purl-spec (types/*-definition.json):
+//
+//   - golang: the spec text says to lowercase the namespace and name. We keep
+//     the case. Go module paths are case sensitive, and lowercasing
+//     "github.com/Masterminds/vcs" would name a different module.
+//   - vscode-extension: the spec says the publisher and name are not case
+//     sensitive. We keep the case. OSV matches these names case-sensitively
+//     and stores some in mixed case, so lowercasing here would make those
+//     advisories unreachable. See adapter/osv/purl_vscode.go.
+//   - pypi: the spec also folds "." and runs of "-", "_", "." into one "-".
+//     We only replace "_" with "-", so "zope.interface" keeps its dot.
+//
+// Note: this changes the stored canonical form of golang, gem, and pypi PURLs
+// compared with earlier releases, which lowercased golang and gem names.
 var namespaceLowerTypes = map[string]bool{
 	"apk": true, "bitbucket": true, "composer": true, "deb": true,
 	"github": true, "hex": true, "npm": true, "pypi": true, "rpm": true,
