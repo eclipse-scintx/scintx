@@ -45,6 +45,10 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 	}
 
 	queryPURL := mapOSVQueryPURL(canonicalPURL)
+	// Reject PURLs that OSV would answer with a false "no findings" (#96).
+	if err = validateOSVQueryPURL(queryPURL); err != nil {
+		return nil, err
+	}
 	vulns, rawPages, err := a.queryAllPages(ctx, QueryRequest{
 		Package: &PackageQuery{PURL: queryPURL},
 	})

@@ -5,6 +5,7 @@
 package osv
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/eclipse-scintx/scintx/adapter"
@@ -41,6 +42,33 @@ func TestVSCodeEcosystemFromRepositoryURL(t *testing.T) {
 		got := fallbackFor(t, base+qualifier)
 		if len(got) != 1 || got[0].Package.Ecosystem != want || got[0].Package.Name != "acme.theme-pro" {
 			t.Fatalf("%q: got %+v, want ecosystem %q", qualifier, got, want)
+		}
+	}
+}
+
+// TestAlpineRequiresDistroQualifier verifies that an Alpine PURL without a
+// release fails closed. OSV has no release-free Alpine records, so the query
+// would return nothing and look clean (#96).
+func TestAlpineRequiresDistroQualifier(t *testing.T) {
+	for _, purl := range []string{
+		"pkg:apk/alpine/openssl@1.1.1k-r0",
+		"pkg:apk/alpine/openssl@1.1.1k-r0?arch=x86_64",
+		"pkg:alpine/openssl@1.1.1k-r0",
+	} {
+		err := validateOSVQueryPURL(mapOSVQueryPURL(purl))
+		var ae *adapter.AdapterError
+		if !errors.As(err, &ae) || ae.Code != adapter.ErrUnsupportedInput || ae.Retryable {
+			t.Fatalf("%s: expected non-retryable ErrUnsupportedInput, got %v", purl, err)
+		}
+	}
+	for _, purl := range []string{
+		"pkg:apk/alpine/openssl@1.1.1k-r0?distro=v3.14",
+		"pkg:alpine/openssl@1.1.1k-r0?arch=x86_64&distro=3.14",
+		"pkg:deb/debian/openssl@1.1.1k-1",
+		"pkg:npm/lodash@4.17.20",
+	} {
+		if err := validateOSVQueryPURL(mapOSVQueryPURL(purl)); err != nil {
+			t.Fatalf("%s: unexpected error %v", purl, err)
 		}
 	}
 }

@@ -59,6 +59,24 @@ func mapOSVQueryPURL(canonicalPURL string) string {
 	return canonicalPURL
 }
 
+// validateOSVQueryPURL fails closed on PURLs that OSV cannot answer correctly.
+// An Alpine PURL without "?distro=" matches nothing on OSV, by PURL or by
+// name, because OSV files every Alpine advisory under a release ("Alpine:v3.14").
+// Without this check such a PURL would be reported as clean (#96).
+func validateOSVQueryPURL(queryPURL string) error {
+	rest, ok := strings.CutPrefix(queryPURL, apkAlpinePURLPrefix)
+	if !ok {
+		return nil
+	}
+	if _, rawQuery := splitPURLCoordAndQuery(rest); extractQualifier(rawQuery, qualifierDistro) != "" {
+		return nil
+	}
+	return &adapter.AdapterError{
+		Code:    adapter.ErrUnsupportedInput,
+		Message: "osv adapter requires a distro qualifier on Alpine PURLs, for example ?distro=v3.14",
+	}
+}
+
 // buildFallbackQueries returns ordered ecosystem+name+version fallback queries
 // when OSV's PURL lookup strays from the PURL specification (#96).
 func buildFallbackQueries(queryPURL string) []QueryRequest {
