@@ -100,6 +100,14 @@ func (a *Adapter) doJSONRequest(
 	endpoint string,
 	reqBody []byte,
 ) ([]byte, error) {
+	if st, ok := adapter.ValidateBaseURL("OSS Index", a.cfg.BaseURL); !ok {
+		return nil, &adapter.AdapterError{
+			Code:      adapter.ErrUpstreamUnavailable,
+			Message:   st.Message,
+			Retryable: false,
+		}
+	}
+
 	httpReq, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,

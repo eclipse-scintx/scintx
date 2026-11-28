@@ -57,105 +57,70 @@ func TestQueryPaginationAndStubHydration(t *testing.T) {
 			var q QueryRequest
 			_ = json.NewDecoder(r.Body).Decode(&q)
 			if q.PageToken == "" {
-				_, _ = w.Write([]byte(`{
-					"vulns": [{
-						"schema_version": "1.6.0",
-						"id": "GHSA-35jh-r3h4-6jhm",
-						"summary": "Command Injection in lodash",
-						"details": "lodash prior to 4.17.21 allows command injection.",
-						"aliases": ["CVE-2021-23337"],
-						"related": ["CGA-1234"],
-						"upstream": ["CVE-2021-23337"],
-						"published": "2021-02-15T00:00:00Z",
-						"modified": "2023-01-01T00:00:00Z",
-						"database_specific": {"severity": "HIGH"},
-						"affected": [{
-							"package": {"ecosystem": "npm", "name": "lodash", "purl": "pkg:npm/lodash"},
-							"versions": ["4.17.20"]
-						}],
-						"references": [{"type": "ADVISORY", "url": "https://nvd.nist.gov/vuln/detail/CVE-2021-23337"}]
-					}],
-					"next_page_token": "page-2"
-				}`))
+				_, _ = w.Write([]byte(`{"vulns":[{
+					"schema_version":"1.6.0","id":"GHSA-35jh-r3h4-6jhm",
+					"summary":"Command Injection in lodash","details":"lodash prior to 4.17.21 allows command injection.",
+					"aliases":["CVE-2021-23337"],"related":["CGA-1234"],"upstream":["CVE-2021-23337"],
+					"published":"2021-02-15T00:00:00Z","modified":"2023-01-01T00:00:00Z","withdrawn":"2024-01-01T00:00:00Z",
+					"database_specific":{"severity":"HIGH","cwe_ids":["CWE-77"]},
+					"affected":[{"package":{"ecosystem":"npm","name":"lodash","purl":"pkg:npm/lodash"},"severity":[{"type":"CVSS_V3","score":"CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H"}],"versions":["4.17.20"]}],
+					"references":[{"type":"ADVISORY","url":"https://nvd.nist.gov/vuln/detail/CVE-2021-23337"}]
+				}],"next_page_token":"page-2"}`))
 				return
 			}
 			if q.PageToken == "page-2" {
 				// Return a stub record with only id and modified to exercise GET /v1/vulns/{id}.
-				_, _ = w.Write([]byte(`{
-					"vulns": [{
-						"id": "MAL-2026-0001",
-						"modified": "2026-11-24T00:00:00Z"
-					}]
-				}`))
+				_, _ = w.Write([]byte(`{"vulns":[{"id":"MAL-2026-0001","modified":"2026-11-24T00:00:00Z"}]}`))
 				return
 			}
 		case r.Method == http.MethodGet && r.URL.Path == vulnsEndpointPrefix+"MAL-2026-0001":
 			vulnEndpointCalled = true
-			_, _ = w.Write([]byte(`{
-				"schema_version": "1.6.0",
-				"id": "MAL-2026-0001",
-				"summary": "Malicious code in package",
-				"details": "Exfiltrates environment variables on install.",
-				"aliases": ["GHSA-malw-0001-0001"]
-			}`))
+			_, _ = w.Write([]byte(`{"schema_version":"1.6.0","id":"MAL-2026-0001","summary":"Malicious code in package","details":"Exfiltrates environment variables on install.","aliases":["GHSA-malw-0001-0001"]}`))
 			return
 		}
 		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 
-	a := NewAdapter(Config{
-		BaseURL:     srv.URL,
-		RequireAuth: true,
-		BearerToken: "test-mirror-token",
-	}, srv.Client())
+	a := NewAdapter(Config{BaseURL: srv.URL, RequireAuth: true, BearerToken: "test-mirror-token"}, srv.Client())
 
 	res, err := a.Evaluate(context.Background(), adapter.EvaluationRequest{
 		SubmissionID: "sub-1", ProviderRunID: "run-1",
-		Artifact: adapter.ArtifactInput{PURL: "pkg:npm/lodash@4.17.20"},
-		RequestedCapabilities: []adapter.Capability{
-			adapter.CapabilityVulnerabilities, adapter.CapabilityThreats,
-		},
+		Artifact:              adapter.ArtifactInput{PURL: "pkg:npm/lodash@4.17.20"},
+		RequestedCapabilities: []adapter.Capability{adapter.CapabilityVulnerabilities, adapter.CapabilityThreats},
 	})
-	if err != nil {
-		t.Fatalf("Evaluate failed: %v", err)
-	}
-	if !vulnEndpointCalled {
-		t.Fatal("expected GET /v1/vulns/MAL-2026-0001 to be called for stub record hydration")
+	if err != nil || !vulnEndpointCalled {
+		t.Fatalf("Evaluate err=%v vulnEndpointCalled=%v", err, vulnEndpointCalled)
 	}
 
 	vulnCheck := res.Report.Capabilities[adapter.CapabilityVulnerabilities].Checks[adapter.CheckKnownVulnerabilities]
-	if vulnCheck.Status != adapter.CheckStatusEvaluated || len(vulnCheck.Findings) != 1 {
-		t.Fatalf("unexpected vulnerability check report: %+v", vulnCheck)
+	threatCheck := res.Report.Capabilities[adapter.CapabilityThreats].Checks[adapter.CheckMalware]
+	if vulnCheck.Status != adapter.CheckStatusEvaluated || len(vulnCheck.Findings) != 1 ||
+		threatCheck.Status != adapter.CheckStatusEvaluated || len(threatCheck.Findings) != 1 {
+		t.Fatalf("unexpected check reports: vuln=%+v threat=%+v", vulnCheck, threatCheck)
 	}
-	vf := vulnCheck.Findings[0]
-	if vf.ID != "GHSA-35jh-r3h4-6jhm" || vf.Severity != adapter.SeverityHigh || vf.Type != adapter.FindingTypeVulnerability {
+	if res.Report.ID != "report-run-1" || res.Report.ResponseMetadata[adapter.RespMetaKeyPageCount] != 2 ||
+		res.Report.ResponseMetadata[adapter.RespMetaKeyHydratedRecordCount] != 1 {
+		t.Fatalf("unexpected report provenance: id=%q meta=%+v", res.Report.ID, res.Report.ResponseMetadata)
+	}
+	vf, tf := vulnCheck.Findings[0], threatCheck.Findings[0]
+	if vf.ID != "GHSA-35jh-r3h4-6jhm" || vf.Severity != adapter.SeverityHigh || vf.Type != adapter.FindingTypeVulnerability ||
+		!slices.Equal(vf.Identifiers, []string{"GHSA-35jh-r3h4-6jhm", "CVE-2021-23337"}) ||
+		vf.Metadata[adapter.MetaKeyPublished] != "2021-02-15T00:00:00Z" || vf.Metadata[adapter.MetaKeyWithdrawn] != "2024-01-01T00:00:00Z" ||
+		vf.Metadata[adapter.MetaKeyAliases] == nil || vf.Metadata[adapter.MetaKeyRelated] == nil || vf.Metadata[adapter.MetaKeySeverity] == nil {
 		t.Fatalf("unexpected vulnerability finding: %+v", vf)
 	}
-	if !slices.Equal(vf.Identifiers, []string{"GHSA-35jh-r3h4-6jhm", "CVE-2021-23337"}) {
-		t.Fatalf("unexpected deduplicated identifiers: %v", vf.Identifiers)
-	}
-	if vf.Metadata[adapter.MetaKeyPublished] != "2021-02-15T00:00:00Z" || vf.Metadata[adapter.MetaKeyRelated] == nil {
-		t.Fatalf("expected provenance metadata on finding, got %+v", vf.Metadata)
-	}
-
-	threatCheck := res.Report.Capabilities[adapter.CapabilityThreats].Checks[adapter.CheckMalware]
-	if threatCheck.Status != adapter.CheckStatusEvaluated || len(threatCheck.Findings) != 1 {
-		t.Fatalf("unexpected malware check report: %+v", threatCheck)
-	}
-	tf := threatCheck.Findings[0]
-	if tf.ID != "MAL-2026-0001" || tf.Severity != adapter.SeverityCritical || tf.Type != adapter.FindingTypeMalware {
+	if tf.ID != "MAL-2026-0001" || tf.Severity != adapter.SeverityCritical || tf.Type != adapter.FindingTypeMalware || len(res.RawProviderResponse) == 0 {
 		t.Fatalf("unexpected hydrated malware finding: %+v", tf)
-	}
-	if len(res.RawProviderResponse) == 0 {
-		t.Fatal("expected RawProviderResponse to be populated")
 	}
 }
 
-// TestOpenVSXExtensionFallback verifies that a pkg:vscode-extension PURL
-// falls back to ecosystem "VSCode:https://open-vsx.org" when direct PURL lookup
-// returns empty (#96).
-func TestOpenVSXExtensionFallback(t *testing.T) {
+// TestOpenVSXAndGolangFallbackMapping verifies PURL, ecosystem, and version
+// mapping for pkg:vscode-extension (defaulting to "VSCode" and mapping
+// "?repository_url=https://open-vsx.org" to "VSCode:https://open-vsx.org") and
+// mixed-case Go modules (#96).
+func TestOpenVSXAndGolangFallbackMapping(t *testing.T) {
+	const openVSXEcosystem = "VSCode:https://open-vsx.org"
 	var queries []QueryRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var q QueryRequest
@@ -166,34 +131,67 @@ func TestOpenVSXExtensionFallback(t *testing.T) {
 			return
 		}
 		if q.Package != nil && q.Package.Ecosystem == openVSXEcosystem && q.Package.Name == "acme.theme-pro" && q.Version == "1.0.2" {
-			_, _ = w.Write([]byte(`{
-				"vulns": [{
-					"id": "MAL-2026-9999",
-					"summary": "Malicious Open VSX extension",
-					"details": "Contains credential stealer."
-				}]
-			}`))
+			_, _ = w.Write([]byte(`{"vulns":[{"id":"MAL-2026-9999","summary":"Malicious Open VSX extension"}]}`))
 			return
 		}
-		http.Error(w, "unexpected query", http.StatusBadRequest)
+		if q.Package != nil && q.Package.Ecosystem == vscodeEcosystem && q.Package.Name == "cline.agent" && q.Version == "3.1.3" {
+			_, _ = w.Write([]byte(`{"vulns":[{"id":"MAL-2025-191157","summary":"Malicious VSCode extension"}]}`))
+			return
+		}
+		if q.Package != nil && q.Package.Ecosystem == goOSVEcosystem && q.Package.Name == "github.com/Masterminds/vcs" && q.Version == "1.13.0" {
+			_, _ = w.Write([]byte(`{"vulns":[{"id":"GO-2022-0414","summary":"Command injection in vcs"}]}`))
+			return
+		}
+		if q.Package != nil && q.Package.Ecosystem == "Alpine:v3.14" && q.Package.Name == "openssl" && q.Version == "1.1.1k-r0" {
+			_, _ = w.Write([]byte(`{"vulns":[{"id":"ALPINE-CVE-2021-3711","summary":"OpenSSL SM2 buffer overflow"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer srv.Close()
 
 	a := NewAdapter(Config{BaseURL: srv.URL}, srv.Client())
-	res, err := a.Evaluate(context.Background(), adapter.EvaluationRequest{
-		SubmissionID:          "sub-vsx",
-		ProviderRunID:         "run-vsx",
+	for _, purl := range []string{
+		"pkg:vscode-extension/acme/theme-pro@1.0.2?repository_url=https://open-vsx.org",
+		"pkg:vscode-extension/Acme/Theme-Pro@1.0.2?repository_url=https://open-vsx.org/",
+		"pkg:vscode-extension/acme/theme-pro@1.0.2?repository_url=https%3A%2F%2Fopen-vsx.org",
+	} {
+		queries = nil
+		res, err := a.Evaluate(context.Background(), adapter.EvaluationRequest{
+			Artifact:              adapter.ArtifactInput{PURL: purl},
+			RequestedCapabilities: []adapter.Capability{adapter.CapabilityThreats},
+		})
+		// VS Code PURLs skip the PURL query, so at least one name query is sent.
+		if err != nil || len(queries) < 1 || len(res.Report.Capabilities[adapter.CapabilityThreats].Checks[adapter.CheckMalware].Findings) != 1 ||
+			res.Report.ResponseMetadata[adapter.RespMetaKeyFallbackEcosystem] != openVSXEcosystem {
+			t.Fatalf("%s: err=%v queries=%d meta=%+v", purl, err, len(queries), res.Report.ResponseMetadata)
+		}
+	}
+
+	// Verify unqualified pkg:vscode-extension defaults to "VSCode" (Microsoft Marketplace), not Open VSX.
+	queries = nil
+	if res, err := a.Evaluate(context.Background(), adapter.EvaluationRequest{
 		Artifact:              adapter.ArtifactInput{PURL: "pkg:vscode-extension/acme/theme-pro@1.0.2"},
 		RequestedCapabilities: []adapter.Capability{adapter.CapabilityThreats},
-	})
-	if err != nil {
-		t.Fatalf("Evaluate failed: %v", err)
+	}); err != nil || len(queries) != 1 || queries[0].Package.PURL != "" || queries[0].Package.Ecosystem != vscodeEcosystem || len(res.Report.Capabilities[adapter.CapabilityThreats].Checks[adapter.CheckMalware].Findings) != 0 {
+		t.Fatalf("expected unqualified pkg:vscode-extension to query %q, got queries=%+v err=%v", vscodeEcosystem, queries, err)
 	}
-	if len(queries) != 2 {
-		t.Fatalf("expected 2 queries (direct PURL then Open VSX fallback), got %d", len(queries))
-	}
-	findings := res.Report.Capabilities[adapter.CapabilityThreats].Checks[adapter.CheckMalware].Findings
-	if len(findings) != 1 || findings[0].ID != "MAL-2026-9999" {
-		t.Fatalf("expected MAL-2026-9999 finding from Open VSX fallback, got %+v", findings)
+
+	// Verify fallback for "VSCode", mixed-case "Go", and "Alpine:vX.Y".
+	for _, tc := range []struct {
+		purl string
+		cap  adapter.Capability
+		chk  adapter.Check
+	}{
+		{"pkg:vscode-extension/cline/agent@3.1.3", adapter.CapabilityThreats, adapter.CheckMalware},
+		{"pkg:golang/github.com/Masterminds/vcs@v1.13.0", adapter.CapabilityVulnerabilities, adapter.CheckKnownVulnerabilities},
+		{"pkg:alpine/openssl@1.1.1k-r0?distro=3.14", adapter.CapabilityVulnerabilities, adapter.CheckKnownVulnerabilities},
+	} {
+		res, err := a.Evaluate(context.Background(), adapter.EvaluationRequest{
+			Artifact: adapter.ArtifactInput{PURL: tc.purl}, RequestedCapabilities: []adapter.Capability{tc.cap},
+		})
+		if err != nil || len(res.Report.Capabilities[tc.cap].Checks[tc.chk].Findings) != 1 {
+			t.Fatalf("%s: expected 1 fallback finding, err=%v", tc.purl, err)
+		}
 	}
 }

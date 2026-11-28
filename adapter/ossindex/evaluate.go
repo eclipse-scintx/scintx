@@ -7,7 +7,6 @@ package ossindex
 import (
 	"context"
 	"encoding/json"
-	"net/url"
 	"slices"
 	"strings"
 
@@ -53,18 +52,34 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 		),
 	}
 
-	rawEvidence, _ := json.Marshal(map[string]any{
+	// All values in the evidence map are JSON-safe types, so this should never fail.
+	// We handle the error explicitly rather than discarding it with _ (#98).
+	rawEvidence, err := json.Marshal(map[string]any{
 		adapter.EvidenceKeyComponents: json.RawMessage(rawBody),
 		adapter.EvidenceKeyCount:      len(findings),
 	})
+	if err != nil {
+		return nil, &adapter.AdapterError{
+			Code:    adapter.ErrMalformedResponse,
+			Message: "failed to encode OSS Index evidence map",
+			Cause:   err,
+		}
+	}
 
 	return &adapter.EvaluationResult{
 		Report: adapter.ProviderReport{
 			SchemaVersion:  adapter.SchemaVersionV1,
+			ID:             adapter.NewProviderReportID(AdapterSlug, req.ProviderRunID),
 			ProviderRunID:  req.ProviderRunID,
 			Provider:       AdapterSlug,
 			AdapterVersion: AdapterVersion,
 			Capabilities:   capabilities,
+			ResponseMetadata: map[string]any{
+				// Redacted: the base URL may hold credentials (#98).
+				adapter.RespMetaKeyEndpoint:          adapter.RedactEndpoint(a.cfg.BaseURL),
+				adapter.RespMetaKeyQueriedCoordinate: queryCoord,
+				adapter.RespMetaKeyComponentCount:    len(reports),
+			},
 		},
 		RawProviderResponse: rawEvidence,
 	}, nil
@@ -72,40 +87,35 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 
 // validateAndMapPURL verifies that rawPURL is a valid, exact-version PURL in a
 // supported OSS Index ecosystem and returns both the canonical SCINTX PURL and
-// the minimized coordinate sent to POST /api/v3/component-report (#95, #96).
+// the minimized coordinate sent to POST /api/v3/component-report (#95, #96, #97).
 func validateAndMapPURL(rawPURL string) (canonicalPURL, queryCoord string, err error) {
-	canonical, version, err := adapter.ValidateVersionedPURL(AdapterSlug, rawPURL, supportedPURLTypes)
+	canonical, _, err := adapter.ValidateVersionedPURL(AdapterSlug, rawPURL, supportedPURLTypes)
 	if err != nil {
 		return "", "", err
 	}
-	// Sonatype Guide's OSS Index Compatibility API does not evaluate version
-	// ranges in PURL coordinates and treats range syntax as a literal string (#95).
-	// Allow '~' inside exact Debian/RPM/pre-release versions (e.g. 1.2.3~rc1)
-	// while rejecting leading '~' or '^' semver ranges and comparator/bracket ranges.
-	decodedVer, _ := url.PathUnescape(version)
-	if strings.HasPrefix(decodedVer, "~") || strings.HasPrefix(decodedVer, "^") || strings.ContainsAny(decodedVer, "<>=*,[]() ") {
-		return "", "", &adapter.AdapterError{
-			Code:      adapter.ErrUnsupportedInput,
-			Message:   "ossindex adapter requires an exact package version, not a version range",
-			Retryable: false,
-		}
-	}
-
 	return canonical, minimizeCoordinate(canonical), nil
 }
 
-// minimizeCoordinate strips ?qualifiers and #subpath from a canonical PURL and
-// removes a leading 'v' before a digit in the @version segment (commonly used
-// in Go and Composer PURLs) so OSS Index matches the exact version (#96).
+// minimizeCoordinate adapts a canonical SCINTX PURL for OSS Index where the
+// upstream /api/v3/component-report endpoint strays from the PURL spec (#96):
+//  1. OSS Index fails to match coordinates containing ?qualifiers or #subpath.
+//  2. OSS Index indexes Go/Composer versions without a leading 'v' prefix.
+//  3. OSS Index matches '+' in build metadata literally rather than '%2B'.
+//
+// The 'v' prefix is stripped for Go and Composer only. It used to be stripped
+// for every ecosystem, which changed real versions elsewhere: for example
+// "pkg:cargo/v8@v8" was sent as "@8".
 func minimizeCoordinate(canonical string) string {
 	coord := canonical
 	if i := strings.IndexAny(coord, "?#"); i >= 0 {
 		coord = coord[:i]
 	}
-	if at := strings.LastIndex(coord, "@"); at >= 0 && at+2 < len(coord) {
-		if (coord[at+1] == 'v' || coord[at+1] == 'V') && coord[at+2] >= '0' && coord[at+2] <= '9' {
+	stripV := strings.HasPrefix(coord, "pkg:golang/") || strings.HasPrefix(coord, "pkg:composer/")
+	if at := strings.LastIndex(coord, "@"); at >= 0 {
+		if stripV && at+2 < len(coord) && (coord[at+1] == 'v' || coord[at+1] == 'V') && coord[at+2] >= '0' && coord[at+2] <= '9' {
 			coord = coord[:at+1] + coord[at+2:]
 		}
+		coord = coord[:at+1] + strings.ReplaceAll(coord[at+1:], "%2B", "+")
 	}
 	return coord
 }

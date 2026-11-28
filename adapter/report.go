@@ -104,11 +104,21 @@ func NewErroredProviderReport(desc AdapterDescriptor, providerRunID string, err 
 
 	return ProviderReport{
 		SchemaVersion:  SchemaVersionV1,
+		ID:             NewProviderReportID(desc.Slug, providerRunID),
 		ProviderRunID:  providerRunID,
 		Provider:       desc.Slug,
 		AdapterVersion: desc.AdapterVersion,
 		Capabilities:   caps,
 	}
+}
+
+// NewProviderReportID returns a deterministic ProviderReport ID derived from
+// providerRunID (or providerSlug when providerRunID is empty) (#68, #72, #98).
+func NewProviderReportID(providerSlug, providerRunID string) string {
+	if providerRunID != "" {
+		return "report-" + providerRunID
+	}
+	return "report-" + providerSlug
 }
 
 // Severity represents the normalized severity level of a finding.
@@ -135,12 +145,14 @@ const (
 	FindingTypeDependency    FindingType = "dependency"
 )
 
-// Standardized Finding.Metadata and raw evidence keys shared across adapters (#98).
+// Standardized Finding.Metadata, ProviderReport.ResponseMetadata, and raw
+// evidence keys shared across adapters (#98).
 const (
 	MetaKeySchemaVersion        = "schemaVersion"
 	MetaKeyPublished            = "published"
 	MetaKeyModified             = "modified"
 	MetaKeyWithdrawn            = "withdrawn"
+	MetaKeyAliases              = "aliases"
 	MetaKeyRelated              = "related"
 	MetaKeyUpstream             = "upstream"
 	MetaKeySeverity             = "severity"
@@ -156,6 +168,16 @@ const (
 	MetaKeyComponentCoordinates = "componentCoordinates"
 	MetaKeyComponentReference   = "componentReference"
 	MetaKeyComponentDescription = "componentDescription"
+
+	RespMetaKeyEndpoint            = "endpoint"
+	RespMetaKeyQueryPURL           = "queryPurl"
+	RespMetaKeyQueriedCoordinate   = "queriedCoordinate"
+	RespMetaKeyFallbackEcosystem   = "fallbackEcosystem"
+	RespMetaKeyFallbackPackageName = "fallbackPackageName"
+	RespMetaKeyFallbackQueries     = "fallbackQueries"
+	RespMetaKeyPageCount           = "pageCount"
+	RespMetaKeyHydratedRecordCount = "hydratedRecordCount"
+	RespMetaKeyComponentCount      = "componentCount"
 
 	EvidenceKeyPages           = "pages"
 	EvidenceKeyCount           = "count"
