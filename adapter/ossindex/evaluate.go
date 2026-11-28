@@ -94,10 +94,11 @@ func validateAndMapPURL(rawPURL string) (canonicalPURL, queryCoord string, err e
 	return canonical, minimizeCoordinate(canonical), nil
 }
 
-// minimizeCoordinate strips ?qualifiers and #subpath from a canonical PURL,
-// removes a leading 'v' before a digit in the @version segment (commonly used
-// in Go and Composer PURLs), and restores '%2B' to '+' in build metadata so
-// OSS Index matches the exact upstream version (#96).
+// minimizeCoordinate adapts a canonical SCINTX PURL for OSS Index where the
+// upstream /api/v3/component-report endpoint strays from the PURL spec (#96):
+//  1. OSS Index fails to match coordinates containing ?qualifiers or #subpath.
+//  2. OSS Index indexes Go/Composer versions without a leading 'v' prefix.
+//  3. OSS Index matches '+' in build metadata literally rather than '%2B'.
 func minimizeCoordinate(canonical string) string {
 	coord := canonical
 	if i := strings.IndexAny(coord, "?#"); i >= 0 {

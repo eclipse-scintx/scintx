@@ -28,12 +28,14 @@ func TestCanonicalPurl_DecodesAndFoldsCase(t *testing.T) {
 		"pkg:npm/@angular/core@1.0.0":   "pkg:npm/%40angular/core@1.0.0",
 		// GitHub names are not case sensitive.
 		"pkg:github/Org/Repo@1": "pkg:github/org/repo@1",
-		// Go module paths are case-sensitive (#96).
-		"pkg:golang/github.com/Masterminds/vcs@1.13.0": "pkg:golang/github.com/Masterminds/vcs@1.13.0",
+		// Go module paths, RubyGems names, and RPM package names are case-sensitive (#96).
+		"pkg:golang/github.com/Masterminds/vcs@1.13.0":  "pkg:golang/github.com/Masterminds/vcs@1.13.0",
+		"pkg:gem/RedCloth@4.2.9":                        "pkg:gem/RedCloth@4.2.9",
+		"pkg:rpm/AlmaLinux/NetworkManager@1.30.0-7.el8": "pkg:rpm/almalinux/NetworkManager@1.30.0-7.el8",
+		"pkg:apk/ALPINE/OpenSSL@1.1.1k-r0?distro=v3.14": "pkg:apk/alpine/openssl@1.1.1k-r0?distro=v3.14",
+		"pkg:pub/HTTP@0.13.0":                           "pkg:pub/http@0.13.0",
 		// PyPI package names fold case and replace '_' with '-' (#96).
 		"pkg:pypi/Django_Debug_Toolbar@3.2": "pkg:pypi/django-debug-toolbar@3.2",
-		// VS Code / Open VSX dot-separated "<publisher>.<name>" normalizes to "<publisher>/<name>" (#96).
-		"pkg:vscode-extension/acme.theme-pro@1.0.2": "pkg:vscode-extension/acme/theme-pro@1.0.2",
 		// "+" is not unreserved, so the canonical form encodes it.
 		"pkg:npm/foo@1.0.0+build": "pkg:npm/foo@1.0.0%2Bbuild",
 	}

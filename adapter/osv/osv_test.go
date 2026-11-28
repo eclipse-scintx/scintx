@@ -100,30 +100,19 @@ func TestQueryPaginationAndStubHydration(t *testing.T) {
 	}
 
 	vulnCheck := res.Report.Capabilities[adapter.CapabilityVulnerabilities].Checks[adapter.CheckKnownVulnerabilities]
-	if vulnCheck.Status != adapter.CheckStatusEvaluated || len(vulnCheck.Findings) != 1 {
-		t.Fatalf("unexpected vulnerability check report: %+v", vulnCheck)
+	threatCheck := res.Report.Capabilities[adapter.CapabilityThreats].Checks[adapter.CheckMalware]
+	if vulnCheck.Status != adapter.CheckStatusEvaluated || len(vulnCheck.Findings) != 1 ||
+		threatCheck.Status != adapter.CheckStatusEvaluated || len(threatCheck.Findings) != 1 {
+		t.Fatalf("unexpected check reports: vuln=%+v threat=%+v", vulnCheck, threatCheck)
 	}
-	vf := vulnCheck.Findings[0]
-	if vf.ID != "GHSA-35jh-r3h4-6jhm" || vf.Severity != adapter.SeverityHigh || vf.Type != adapter.FindingTypeVulnerability {
+	vf, tf := vulnCheck.Findings[0], threatCheck.Findings[0]
+	if vf.ID != "GHSA-35jh-r3h4-6jhm" || vf.Severity != adapter.SeverityHigh || vf.Type != adapter.FindingTypeVulnerability ||
+		!slices.Equal(vf.Identifiers, []string{"GHSA-35jh-r3h4-6jhm", "CVE-2021-23337"}) ||
+		vf.Metadata[adapter.MetaKeyPublished] != "2021-02-15T00:00:00Z" || vf.Metadata[adapter.MetaKeyRelated] == nil {
 		t.Fatalf("unexpected vulnerability finding: %+v", vf)
 	}
-	if !slices.Equal(vf.Identifiers, []string{"GHSA-35jh-r3h4-6jhm", "CVE-2021-23337"}) {
-		t.Fatalf("unexpected deduplicated identifiers: %v", vf.Identifiers)
-	}
-	if vf.Metadata[adapter.MetaKeyPublished] != "2021-02-15T00:00:00Z" || vf.Metadata[adapter.MetaKeyRelated] == nil {
-		t.Fatalf("expected provenance metadata on finding, got %+v", vf.Metadata)
-	}
-
-	threatCheck := res.Report.Capabilities[adapter.CapabilityThreats].Checks[adapter.CheckMalware]
-	if threatCheck.Status != adapter.CheckStatusEvaluated || len(threatCheck.Findings) != 1 {
-		t.Fatalf("unexpected malware check report: %+v", threatCheck)
-	}
-	tf := threatCheck.Findings[0]
-	if tf.ID != "MAL-2026-0001" || tf.Severity != adapter.SeverityCritical || tf.Type != adapter.FindingTypeMalware {
+	if tf.ID != "MAL-2026-0001" || tf.Severity != adapter.SeverityCritical || tf.Type != adapter.FindingTypeMalware || len(res.RawProviderResponse) == 0 {
 		t.Fatalf("unexpected hydrated malware finding: %+v", tf)
-	}
-	if len(res.RawProviderResponse) == 0 {
-		t.Fatal("expected RawProviderResponse to be populated")
 	}
 }
 
@@ -154,6 +143,10 @@ func TestOpenVSXAndGolangFallbackMapping(t *testing.T) {
 			_, _ = w.Write([]byte(`{"vulns":[{"id":"GO-2022-0414","summary":"Command injection in vcs"}]}`))
 			return
 		}
+		if q.Package != nil && q.Package.Ecosystem == "Alpine:v3.14" && q.Package.Name == "openssl" && q.Version == "1.1.1k-r0" {
+			_, _ = w.Write([]byte(`{"vulns":[{"id":"ALPINE-CVE-2021-3711","summary":"OpenSSL SM2 buffer overflow"}]}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer srv.Close()
@@ -162,7 +155,7 @@ func TestOpenVSXAndGolangFallbackMapping(t *testing.T) {
 	for _, purl := range []string{
 		"pkg:vscode-extension/acme/theme-pro@1.0.2?repository_url=https://open-vsx.org",
 		"pkg:vscode-extension/Acme/Theme-Pro@1.0.2?repository_url=https://open-vsx.org/",
-		"pkg:vscode-extension/acme.theme-pro@1.0.2?repository_url=https%3A%2F%2Fopen-vsx.org",
+		"pkg:vscode-extension/acme/theme-pro@1.0.2?repository_url=https%3A%2F%2Fopen-vsx.org",
 	} {
 		queries = nil
 		res, err := a.Evaluate(context.Background(), adapter.EvaluationRequest{
@@ -183,17 +176,21 @@ func TestOpenVSXAndGolangFallbackMapping(t *testing.T) {
 		t.Fatalf("expected unqualified pkg:vscode-extension to query %q, got queries=%+v err=%v", vscodeEcosystem, queries, err)
 	}
 
-	// Verify unqualified pkg:vscode-extension matches "VSCode" records, and mixed-case "Go" works.
-	if res, err := a.Evaluate(context.Background(), adapter.EvaluationRequest{
-		Artifact:              adapter.ArtifactInput{PURL: "pkg:vscode-extension/cline/agent@3.1.3"},
-		RequestedCapabilities: []adapter.Capability{adapter.CapabilityThreats},
-	}); err != nil || len(res.Report.Capabilities[adapter.CapabilityThreats].Checks[adapter.CheckMalware].Findings) != 1 {
-		t.Fatalf("expected VSCode parent ecosystem fallback finding, err=%v", err)
-	}
-	if res, err := a.Evaluate(context.Background(), adapter.EvaluationRequest{
-		Artifact:              adapter.ArtifactInput{PURL: "pkg:golang/github.com/Masterminds/vcs@v1.13.0"},
-		RequestedCapabilities: []adapter.Capability{adapter.CapabilityVulnerabilities},
-	}); err != nil || len(res.Report.Capabilities[adapter.CapabilityVulnerabilities].Checks[adapter.CheckKnownVulnerabilities].Findings) != 1 {
-		t.Fatalf("expected mixed-case Go fallback finding, err=%v", err)
+	// Verify fallback for "VSCode", mixed-case "Go", and "Alpine:vX.Y".
+	for _, tc := range []struct {
+		purl string
+		cap  adapter.Capability
+		chk  adapter.Check
+	}{
+		{"pkg:vscode-extension/cline/agent@3.1.3", adapter.CapabilityThreats, adapter.CheckMalware},
+		{"pkg:golang/github.com/Masterminds/vcs@v1.13.0", adapter.CapabilityVulnerabilities, adapter.CheckKnownVulnerabilities},
+		{"pkg:alpine/openssl@1.1.1k-r0?distro=3.14", adapter.CapabilityVulnerabilities, adapter.CheckKnownVulnerabilities},
+	} {
+		res, err := a.Evaluate(context.Background(), adapter.EvaluationRequest{
+			Artifact: adapter.ArtifactInput{PURL: tc.purl}, RequestedCapabilities: []adapter.Capability{tc.cap},
+		})
+		if err != nil || len(res.Report.Capabilities[tc.cap].Checks[tc.chk].Findings) != 1 {
+			t.Fatalf("%s: expected 1 fallback finding, err=%v", tc.purl, err)
+		}
 	}
 }

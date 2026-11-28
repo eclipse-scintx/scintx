@@ -13,13 +13,16 @@ import (
 // MaxPurlLength caps the total byte length of a submitted Package URL.
 const MaxPurlLength = 2048
 
-// namespaceLowerTypes are the ecosystems whose spec says the namespace and
-// name are not case sensitive and must be stored in lower case. github was
-// missing, so pkg:github/Org/Repo and pkg:github/org/repo did not match.
+// namespaceLowerTypes and nameLowerTypes list the ecosystems whose PURL
+// specification mandates lowercasing the namespace and/or package name (#96).
 var namespaceLowerTypes = map[string]bool{
-	"bitbucket": true, "composer": true, "deb": true, "gem": true,
-	"github": true, "hex": true, "npm": true,
-	"pypi": true, "rpm": true,
+	"apk": true, "bitbucket": true, "composer": true, "deb": true,
+	"github": true, "hex": true, "npm": true, "pypi": true, "rpm": true,
+}
+
+var nameLowerTypes = map[string]bool{
+	"apk": true, "bitbucket": true, "composer": true, "deb": true,
+	"github": true, "hex": true, "npm": true, "pub": true, "pypi": true,
 }
 
 var (
@@ -80,22 +83,17 @@ func parsePurl(purl string) (*parsedPurl, error) {
 	// Decode, reject "." and ".." (including the encoded form %2e%2e), then
 	// re-encode. The raw string checks above cannot see a segment that is
 	// still percent-encoded.
-	lower := namespaceLowerTypes[typ]
 	var err error
-	if p.Namespace, err = normalizePurlPath(p.Namespace, "namespace", lower); err != nil {
+	if p.Namespace, err = normalizePurlPath(p.Namespace, "namespace", namespaceLowerTypes[typ]); err != nil {
 		return nil, err
 	}
-	if p.Name, err = normalizePurlPath(p.Name, "name", lower); err != nil {
+	if p.Name, err = normalizePurlPath(p.Name, "name", nameLowerTypes[typ]); err != nil {
 		return nil, err
 	}
 	if typ == "pypi" {
-		// Per the PURL specification for pypi (PEP 503), underscores normalize to dashes (#96).
+		// Per the PURL specification for pypi (PEP 503), underscores in PyPI
+		// package names must be replaced with dashes (#96).
 		p.Name = strings.ReplaceAll(p.Name, "_", "-")
-	} else if typ == "vscode-extension" && p.Namespace == "" && strings.Count(p.Name, ".") == 1 {
-		// Split dot-separated "<publisher>.<name>" into PURL namespace/name (#96).
-		if pub, ext, ok := strings.Cut(p.Name, "."); ok && pub != "" && ext != "" {
-			p.Namespace, p.Name = pub, ext
-		}
 	}
 	if p.Name == "" || strings.Contains(p.Name, "/") {
 		return nil, fmt.Errorf("invalid purl package coordinates in %s", purl)
