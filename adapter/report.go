@@ -174,6 +174,7 @@ const (
 	RespMetaKeyQueriedCoordinate   = "queriedCoordinate"
 	RespMetaKeyFallbackEcosystem   = "fallbackEcosystem"
 	RespMetaKeyFallbackPackageName = "fallbackPackageName"
+	RespMetaKeyFallbackQueries     = "fallbackQueries"
 	RespMetaKeyPageCount           = "pageCount"
 	RespMetaKeyHydratedRecordCount = "hydratedRecordCount"
 	RespMetaKeyComponentCount      = "componentCount"

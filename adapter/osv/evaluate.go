@@ -68,11 +68,16 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 	// strays from the PURL spec (VS Code / Open VSX extensions, mixed-case Go
 	// module paths, and Alpine APK PURLs with a ?distro= qualifier) (#96).
 	var fallbackEco, fallbackPkg string
+	// fallbackTried lists each fallback sent to OSV as "<ecosystem>/<name>".
+	var fallbackTried []string
 	if len(vulns) == 0 {
 		for _, fbReq := range buildFallbackQueries(queryPURL) {
 			fbVulns, fbPages, fbErr := a.queryAllPages(ctx, fbReq)
 			if fbErr != nil {
 				return nil, fbErr
+			}
+			if fbReq.Package != nil {
+				fallbackTried = append(fallbackTried, fbReq.Package.Ecosystem+"/"+fbReq.Package.Name)
 			}
 			rawPages = append(rawPages, fbPages...)
 			if len(fbVulns) > 0 {
@@ -116,9 +121,15 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 	}
 
 	respMeta := map[string]any{
-		adapter.RespMetaKeyEndpoint:  a.cfg.BaseURL,
+		// Redacted: the base URL may hold credentials (#98).
+		adapter.RespMetaKeyEndpoint:  adapter.RedactEndpoint(a.cfg.BaseURL),
 		adapter.RespMetaKeyQueryPURL: queryPURL,
 		adapter.RespMetaKeyPageCount: len(rawPages),
+	}
+	// Record every fallback query that was sent, even when none matched. A
+	// clean report then still shows which names were checked (#98).
+	if len(fallbackTried) > 0 {
+		respMeta[adapter.RespMetaKeyFallbackQueries] = fallbackTried
 	}
 	if len(hydratedRaw) > 0 {
 		respMeta[adapter.RespMetaKeyHydratedRecordCount] = len(hydratedRaw)
