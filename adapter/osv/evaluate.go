@@ -122,19 +122,16 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 // for PURLs whose upstream OSV records omit package.purl (VS Code / Open VSX)
 // or preserve mixed-case Go module paths (#96).
 func buildFallbackQueries(canonicalPURL string) []QueryRequest {
-	if extName, ver, ecosystems, ok := parseVSCodeExtensionPURL(canonicalPURL); ok {
-		names := []string{extName}
+	if extName, ver, eco, ok := parseVSCodeExtensionPURL(canonicalPURL); ok {
+		out := []QueryRequest{{
+			Package: &PackageQuery{Ecosystem: eco, Name: extName},
+			Version: ver,
+		}}
 		if lower := strings.ToLower(extName); lower != extName {
-			names = append(names, lower)
-		}
-		out := make([]QueryRequest, 0, len(ecosystems)*len(names))
-		for _, eco := range ecosystems {
-			for _, name := range names {
-				out = append(out, QueryRequest{
-					Package: &PackageQuery{Ecosystem: eco, Name: name},
-					Version: ver,
-				})
-			}
+			out = append(out, QueryRequest{
+				Package: &PackageQuery{Ecosystem: eco, Name: lower},
+				Version: ver,
+			})
 		}
 		return out
 	}

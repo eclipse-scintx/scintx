@@ -128,9 +128,11 @@ func TestQueryPaginationAndStubHydration(t *testing.T) {
 }
 
 // TestOpenVSXAndGolangFallbackMapping verifies PURL, ecosystem, and version
-// mapping for pkg:vscode-extension, pkg:openvsx, dot-separated publisher.name
-// coordinates, VSCode ecosystem fallback, and mixed-case Go modules (#96).
+// mapping for pkg:vscode-extension (defaulting to "VSCode" and mapping
+// "?repository_url=https://open-vsx.org" to "VSCode:https://open-vsx.org") and
+// mixed-case Go modules (#96).
 func TestOpenVSXAndGolangFallbackMapping(t *testing.T) {
+	const openVSXEcosystem = "VSCode:https://open-vsx.org"
 	var queries []QueryRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var q QueryRequest
@@ -158,7 +160,7 @@ func TestOpenVSXAndGolangFallbackMapping(t *testing.T) {
 
 	a := NewAdapter(Config{BaseURL: srv.URL}, srv.Client())
 	for _, purl := range []string{
-		"pkg:vscode-extension/acme/theme-pro@1.0.2",
+		"pkg:vscode-extension/acme/theme-pro@1.0.2?repository_url=https://open-vsx.org",
 		"pkg:vscode-extension/Acme/Theme-Pro@1.0.2?repository_url=https://open-vsx.org/",
 		"pkg:vscode-extension/acme.theme-pro@1.0.2?repository_url=https%3A%2F%2Fopen-vsx.org",
 	} {
@@ -172,16 +174,16 @@ func TestOpenVSXAndGolangFallbackMapping(t *testing.T) {
 		}
 	}
 
-	// Verify explicit repository_url=https://open-vsx.org does NOT fall back to parent "VSCode".
+	// Verify unqualified pkg:vscode-extension defaults to "VSCode" (Microsoft Marketplace), not Open VSX.
 	queries = nil
 	if res, err := a.Evaluate(context.Background(), adapter.EvaluationRequest{
-		Artifact:              adapter.ArtifactInput{PURL: "pkg:vscode-extension/cline/agent@3.1.3?repository_url=https://open-vsx.org"},
+		Artifact:              adapter.ArtifactInput{PURL: "pkg:vscode-extension/acme/theme-pro@1.0.2"},
 		RequestedCapabilities: []adapter.Capability{adapter.CapabilityThreats},
-	}); err != nil || len(queries) != 2 || len(res.Report.Capabilities[adapter.CapabilityThreats].Checks[adapter.CheckMalware].Findings) != 0 {
-		t.Fatalf("expected repository_url=open-vsx.org to scope solely to Open VSX, err=%v queries=%d", err, len(queries))
+	}); err != nil || len(queries) != 2 || queries[1].Package.Ecosystem != vscodeEcosystem || len(res.Report.Capabilities[adapter.CapabilityThreats].Checks[adapter.CheckMalware].Findings) != 0 {
+		t.Fatalf("expected unqualified pkg:vscode-extension to query %q, got queries=%+v err=%v", vscodeEcosystem, queries, err)
 	}
 
-	// Verify unqualified pkg:vscode-extension falls back to parent "VSCode" ecosystem, and mixed-case "Go" works.
+	// Verify unqualified pkg:vscode-extension matches "VSCode" records, and mixed-case "Go" works.
 	if res, err := a.Evaluate(context.Background(), adapter.EvaluationRequest{
 		Artifact:              adapter.ArtifactInput{PURL: "pkg:vscode-extension/cline/agent@3.1.3"},
 		RequestedCapabilities: []adapter.Capability{adapter.CapabilityThreats},

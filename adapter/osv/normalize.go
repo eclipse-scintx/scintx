@@ -16,11 +16,8 @@ import (
 // context, and provider provenance (#94, #96, #98).
 
 const (
-	// openVSXEcosystem is the primary ecosystem string OSV uses for Open VSX
-	// extension advisories when a direct PURL lookup returns no matches (#96).
-	openVSXEcosystem = "VSCode:https://open-vsx.org"
-
-	// vscodeEcosystem is the parent OSV ecosystem string for VS Code extensions.
+	// vscodeEcosystem is the default OSV ecosystem string for VS Code extensions
+	// (Microsoft Visual Studio Marketplace) when repository_url is omitted (#96).
 	vscodeEcosystem = "VSCode"
 
 	// goOSVEcosystem is the OSV ecosystem string for Go modules.
@@ -107,11 +104,12 @@ func buildFindingMetadata(v Vulnerability) map[string]any {
 }
 
 // parseVSCodeExtensionPURL extracts "<publisher>.<name>", "<version>", and the
-// target OSV ecosystem(s) from a canonical "pkg:vscode-extension/<publisher>/<name>@<version>"
-// PURL, honoring the "?repository_url=..." qualifier when present (#96).
-func parseVSCodeExtensionPURL(purl string) (extName, version string, ecosystems []string, ok bool) {
+// target OSV ecosystem from a canonical "pkg:vscode-extension/<publisher>/<name>@<version>"
+// PURL, defaulting to "VSCode" (Microsoft Marketplace) and mapping
+// "?repository_url=https://open-vsx.org" to "VSCode:https://open-vsx.org" (#96).
+func parseVSCodeExtensionPURL(purl string) (extName, version, ecosystem string, ok bool) {
 	if !strings.HasPrefix(purl, vscodeExtensionPURLPrefix) {
-		return "", "", nil, false
+		return "", "", "", false
 	}
 	rest := strings.TrimPrefix(purl, vscodeExtensionPURLPrefix)
 	if hash := strings.IndexByte(rest, '#'); hash >= 0 {
@@ -124,27 +122,27 @@ func parseVSCodeExtensionPURL(purl string) (extName, version string, ecosystems 
 	}
 	at := strings.IndexByte(rest, '@')
 	if at <= 0 {
-		return "", "", nil, false
+		return "", "", "", false
 	}
 	rawVer, err := url.PathUnescape(rest[at+1:])
 	if err != nil || rawVer == "" {
-		return "", "", nil, false
+		return "", "", "", false
 	}
 	parts := strings.SplitN(rest[:at], "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.Contains(parts[1], "/") {
-		return "", "", nil, false
+		return "", "", "", false
 	}
 	pub, err1 := url.PathUnescape(parts[0])
 	name, err2 := url.PathUnescape(parts[1])
 	if err1 != nil || err2 != nil || pub == "" || name == "" {
-		return "", "", nil, false
+		return "", "", "", false
 	}
-	return pub + "." + name, rawVer, resolveVSCodeEcosystems(rawQuery), true
+	return pub + "." + name, rawVer, resolveVSCodeEcosystem(rawQuery), true
 }
 
-// resolveVSCodeEcosystems maps a PURL query string's repository_url qualifier
-// to the corresponding OSV ecosystem(s) (#96).
-func resolveVSCodeEcosystems(rawQuery string) []string {
+// resolveVSCodeEcosystem maps a PURL query string's repository_url qualifier
+// to the corresponding OSV ecosystem, defaulting to "VSCode" (#96).
+func resolveVSCodeEcosystem(rawQuery string) string {
 	for _, kv := range strings.Split(rawQuery, "&") {
 		k, v, found := strings.Cut(kv, "=")
 		if !found || k != qualifierRepositoryURL {
@@ -155,15 +153,12 @@ func resolveVSCodeEcosystems(rawQuery string) []string {
 			break
 		}
 		repoURL = strings.TrimRight(strings.TrimSpace(repoURL), "/")
-		if repoURL == "" {
-			break
+		if repoURL == "" || strings.Contains(strings.ToLower(repoURL), "marketplace.visualstudio.com") {
+			return vscodeEcosystem
 		}
-		if strings.Contains(strings.ToLower(repoURL), "marketplace.visualstudio.com") {
-			return []string{vscodeEcosystem}
-		}
-		return []string{vscodeEcosystem + ":" + repoURL}
+		return vscodeEcosystem + ":" + repoURL
 	}
-	return []string{openVSXEcosystem, vscodeEcosystem}
+	return vscodeEcosystem
 }
 
 // parseMixedCaseGolangPURL extracts the Go module path and version when a
