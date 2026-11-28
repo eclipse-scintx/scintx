@@ -23,6 +23,28 @@ func fallbackFor(t *testing.T, rawPURL string) []QueryRequest {
 	return buildFallbackQueries(mapOSVQueryPURL(canonical))
 }
 
+// TestVSCodeEcosystemFromRepositoryURL verifies that the registry URL is
+// compared by host, without regard to case, before it becomes the OSV
+// ecosystem string. OSV compares that string exactly (#96).
+func TestVSCodeEcosystemFromRepositoryURL(t *testing.T) {
+	const base = "pkg:vscode-extension/acme/theme-pro@1.0.2"
+	for qualifier, want := range map[string]string{
+		"":                                     "VSCode",
+		"?repository_url=https://open-vsx.org": "VSCode:https://open-vsx.org",
+		// Host and scheme case must not change the ecosystem.
+		"?repository_url=HTTPS://Open-VSX.org/": "VSCode:https://open-vsx.org",
+		// The Marketplace is the default ecosystem, with or without a path.
+		"?repository_url=https://Marketplace.VisualStudio.com/vscode": "VSCode",
+		// A look-alike host is not the Marketplace.
+		"?repository_url=https://notmarketplace.visualstudio.com.evil.example": "VSCode:https://notmarketplace.visualstudio.com.evil.example",
+	} {
+		got := fallbackFor(t, base+qualifier)
+		if len(got) != 1 || got[0].Package.Ecosystem != want || got[0].Package.Name != "acme.theme-pro" {
+			t.Fatalf("%q: got %+v, want ecosystem %q", qualifier, got, want)
+		}
+	}
+}
+
 // TestFallbackNamesArePercentDecoded verifies that fallback queries send the
 // plain package name to OSV. The canonical PURL encodes "+" as "%2B". Sending
 // the encoded name matched nothing and reported the package as clean (#96).

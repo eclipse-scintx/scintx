@@ -25,6 +25,8 @@ const (
 	vscodeExtensionPURLPrefix = "pkg:" + string(adapter.EcosystemVSCodeExtension) + "/"
 	golangPURLPrefix          = "pkg:" + string(adapter.EcosystemGolang) + "/"
 	apkAlpinePURLPrefix       = "pkg:apk/alpine/"
+	// marketplaceHost is the host of the Microsoft Visual Studio Marketplace.
+	marketplaceHost = "marketplace.visualstudio.com"
 )
 
 // distroTypeToStandardPURLPrefix maps the Linux distro PURL types declared in
@@ -102,14 +104,30 @@ func parseVSCodeExtensionPURL(purl string) (extName, version, ecosystem string, 
 // resolveVSCodeEcosystem maps the PURL spec's optional repository_url qualifier
 // onto OSV's VSCode ecosystem naming ("VSCode" by default for Microsoft Visual
 // Studio Marketplace, or "VSCode:<repository_url>" for Open VSX) (#96).
+//
+// The scheme and host are lowercased first. URL hosts are not case sensitive,
+// but OSV compares the ecosystem string exactly, so "https://Open-VSX.org"
+// matched nothing and a malicious extension was reported as clean.
+//
+// The Marketplace is detected by its exact host (or a subdomain of it). The
+// old substring test also accepted hosts such as
+// "notmarketplace.visualstudio.com.evil.example".
 func resolveVSCodeEcosystem(rawQuery string) string {
-	if repoURL := extractQualifier(rawQuery, qualifierRepositoryURL); repoURL != "" {
-		repoURL = strings.TrimRight(repoURL, "/")
-		if !strings.Contains(strings.ToLower(repoURL), "marketplace.visualstudio.com") {
-			return vscodeEcosystem + ":" + repoURL
-		}
+	repoURL := strings.TrimRight(extractQualifier(rawQuery, qualifierRepositoryURL), "/")
+	if repoURL == "" {
+		return vscodeEcosystem
 	}
-	return vscodeEcosystem
+	parsed, err := url.Parse(repoURL)
+	if err != nil || parsed.Host == "" {
+		// Not a usable URL. Pass it through unchanged; OSV will match nothing.
+		return vscodeEcosystem + ":" + repoURL
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	parsed.Host = strings.ToLower(parsed.Host)
+	if host := parsed.Hostname(); host == marketplaceHost || strings.HasSuffix(host, "."+marketplaceHost) {
+		return vscodeEcosystem
+	}
+	return vscodeEcosystem + ":" + strings.TrimRight(parsed.String(), "/")
 }
 
 // parseMixedCaseGolangPURL works around an OSV provider deviation from the PURL
