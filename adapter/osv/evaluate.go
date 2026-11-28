@@ -55,6 +55,7 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 	// Fall back to ecosystem+name+version queries when OSV's PURL indexing
 	// strays from the PURL spec (VS Code / Open VSX extensions, mixed-case Go
 	// module paths, and Alpine APK PURLs with a ?distro= qualifier) (#96).
+	var fallbackEco, fallbackPkg string
 	if len(vulns) == 0 {
 		for _, fbReq := range buildFallbackQueries(queryPURL) {
 			fbVulns, fbPages, fbErr := a.queryAllPages(ctx, fbReq)
@@ -64,6 +65,10 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 			rawPages = append(rawPages, fbPages...)
 			if len(fbVulns) > 0 {
 				vulns = fbVulns
+				if fbReq.Package != nil {
+					fallbackEco = fbReq.Package.Ecosystem
+					fallbackPkg = fbReq.Package.Name
+				}
 				break
 			}
 		}
@@ -96,6 +101,19 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 		capabilities[adapter.CapabilityThreats] = adapter.NewCompletedCapabilityReport(adapter.CheckMalware, threatFindings)
 	}
 
+	respMeta := map[string]any{
+		adapter.RespMetaKeyEndpoint:  a.cfg.BaseURL,
+		adapter.RespMetaKeyQueryPURL: queryPURL,
+		adapter.RespMetaKeyPageCount: len(rawPages),
+	}
+	if len(hydratedRaw) > 0 {
+		respMeta[adapter.RespMetaKeyHydratedRecordCount] = len(hydratedRaw)
+	}
+	if fallbackEco != "" {
+		respMeta[adapter.RespMetaKeyFallbackEcosystem] = fallbackEco
+		respMeta[adapter.RespMetaKeyFallbackPackageName] = fallbackPkg
+	}
+
 	evidenceMap := map[string]any{adapter.EvidenceKeyPages: rawPages, adapter.EvidenceKeyCount: len(hydratedVulns)}
 	if len(hydratedRaw) > 0 {
 		evidenceMap[adapter.EvidenceKeyHydratedRecords] = hydratedRaw
@@ -104,8 +122,13 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 
 	return &adapter.EvaluationResult{
 		Report: adapter.ProviderReport{
-			SchemaVersion: adapter.SchemaVersionV1, ProviderRunID: req.ProviderRunID,
-			Provider: AdapterSlug, AdapterVersion: AdapterVersion, Capabilities: capabilities,
+			SchemaVersion:    adapter.SchemaVersionV1,
+			ID:               adapter.NewProviderReportID(AdapterSlug, req.ProviderRunID),
+			ProviderRunID:    req.ProviderRunID,
+			Provider:         AdapterSlug,
+			AdapterVersion:   AdapterVersion,
+			Capabilities:     capabilities,
+			ResponseMetadata: respMeta,
 		},
 		RawProviderResponse: rawEvidence,
 	}, nil

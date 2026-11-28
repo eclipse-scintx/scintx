@@ -64,13 +64,13 @@ func TestComponentReportAndGuidePATBasicAuth(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`[{
 			"coordinates": "pkg:maven/org.apache.commons/commons-text@1.9",
+			"description": "Apache Commons Text library",
 			"reference": "https://ossindex.sonatype.org/component/pkg:maven/org.apache.commons/commons-text@1.9",
 			"vulnerabilities": [{
 				"id": "sonatype-2022-5432",
 				"displayName": "SONATYPE-2022-5432",
 				"title": "[CVE-2022-42889] CWE-94: Improper Control of Generation of Code",
 				"description": "Apache Commons Text interpolation RCE.",
-				"cvssScore": 9.8,
 				"cvssVector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
 				"cwe": "CWE-94",
 				"cve": "CVE-2022-42889",
@@ -118,8 +118,14 @@ func TestComponentReportAndGuidePATBasicAuth(t *testing.T) {
 	if !slices.Equal(f.Identifiers, wantIDs) {
 		t.Fatalf("Identifiers = %v, want %v", f.Identifiers, wantIDs)
 	}
-	if f.Metadata[adapter.MetaKeyCVE] != "CVE-2022-42889" || f.Metadata[adapter.MetaKeyCWE] != "CWE-94" {
-		t.Fatalf("expected CVE and CWE metadata, got %+v", f.Metadata)
+	if res.Report.ID != "report-run-1" ||
+		res.Report.ResponseMetadata[adapter.RespMetaKeyQueriedCoordinate] != "pkg:maven/org.apache.commons/commons-text@1.9" ||
+		res.Report.ResponseMetadata[adapter.RespMetaKeyComponentCount] != 1 {
+		t.Fatalf("unexpected report provenance: id=%q meta=%+v", res.Report.ID, res.Report.ResponseMetadata)
+	}
+	if f.Metadata[adapter.MetaKeyCVE] != "CVE-2022-42889" || f.Metadata[adapter.MetaKeyCWE] != "CWE-94" ||
+		f.Metadata[adapter.MetaKeyComponentDescription] != "Apache Commons Text library" {
+		t.Fatalf("expected CVE, CWE, and componentDescription metadata, got %+v", f.Metadata)
 	}
 	if f.Metadata[adapter.MetaKeyComponentCoordinates] != "pkg:maven/org.apache.commons/commons-text@1.9" {
 		t.Fatalf("expected componentCoordinates metadata, got %+v", f.Metadata)

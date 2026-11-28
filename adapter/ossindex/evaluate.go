@@ -60,10 +60,16 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 	return &adapter.EvaluationResult{
 		Report: adapter.ProviderReport{
 			SchemaVersion:  adapter.SchemaVersionV1,
+			ID:             adapter.NewProviderReportID(AdapterSlug, req.ProviderRunID),
 			ProviderRunID:  req.ProviderRunID,
 			Provider:       AdapterSlug,
 			AdapterVersion: AdapterVersion,
 			Capabilities:   capabilities,
+			ResponseMetadata: map[string]any{
+				adapter.RespMetaKeyEndpoint:          a.cfg.BaseURL,
+				adapter.RespMetaKeyQueriedCoordinate: queryCoord,
+				adapter.RespMetaKeyComponentCount:    len(reports),
+			},
 		},
 		RawProviderResponse: rawEvidence,
 	}, nil

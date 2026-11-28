@@ -39,11 +39,17 @@ func normalizeFinding(comp ComponentReport, v Vulnerability, artifactPURL string
 	}
 }
 
-// extractSeverity maps an OSS Index vulnerability's numeric cvssScore onto the
-// standardized SCINTX Severity scale using the shared adapter helper (#72, #98).
+// extractSeverity maps an OSS Index vulnerability's numeric cvssScore (or
+// cvssVector when cvssScore is omitted) onto the standardized SCINTX Severity
+// scale using the shared adapter helpers (#72, #98).
 func extractSeverity(v Vulnerability) adapter.Severity {
 	if v.CVSSScore != nil {
 		if sev, ok := adapter.SeverityFromCVSSFloat(*v.CVSSScore); ok {
+			return sev
+		}
+	}
+	if v.CVSSVector != "" {
+		if sev, ok := adapter.SeverityFromCVSSScore(v.CVSSVector); ok {
 			return sev
 		}
 	}

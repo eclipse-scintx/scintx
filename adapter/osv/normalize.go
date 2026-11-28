@@ -62,14 +62,17 @@ func buildFindingMetadata(v Vulnerability) map[string]any {
 	if v.Withdrawn != "" {
 		meta[adapter.MetaKeyWithdrawn] = v.Withdrawn
 	}
+	if len(v.Aliases) > 0 {
+		meta[adapter.MetaKeyAliases] = v.Aliases
+	}
 	if len(v.Related) > 0 {
 		meta[adapter.MetaKeyRelated] = v.Related
 	}
 	if len(v.Upstream) > 0 {
 		meta[adapter.MetaKeyUpstream] = v.Upstream
 	}
-	if len(v.Severity) > 0 {
-		meta[adapter.MetaKeySeverity] = v.Severity
+	if sev := collectSeverityEntries(v); len(sev) > 0 {
+		meta[adapter.MetaKeySeverity] = sev
 	}
 	if len(v.Affected) > 0 {
 		meta[adapter.MetaKeyAffected] = v.Affected
@@ -84,4 +87,18 @@ func buildFindingMetadata(v Vulnerability) map[string]any {
 		return nil
 	}
 	return meta
+}
+
+// collectSeverityEntries returns top-level severity entries when present, or
+// collects package-level severity entries across v.Affected so raw CVSS vectors
+// are preserved in Finding.Metadata even when omitted at the top level (#98).
+func collectSeverityEntries(v Vulnerability) []SeverityEntry {
+	if len(v.Severity) > 0 {
+		return v.Severity
+	}
+	var out []SeverityEntry
+	for _, aff := range v.Affected {
+		out = append(out, aff.Severity...)
+	}
+	return out
 }

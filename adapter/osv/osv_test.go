@@ -61,9 +61,9 @@ func TestQueryPaginationAndStubHydration(t *testing.T) {
 					"schema_version":"1.6.0","id":"GHSA-35jh-r3h4-6jhm",
 					"summary":"Command Injection in lodash","details":"lodash prior to 4.17.21 allows command injection.",
 					"aliases":["CVE-2021-23337"],"related":["CGA-1234"],"upstream":["CVE-2021-23337"],
-					"published":"2021-02-15T00:00:00Z","modified":"2023-01-01T00:00:00Z",
-					"database_specific":{"severity":"HIGH"},
-					"affected":[{"package":{"ecosystem":"npm","name":"lodash","purl":"pkg:npm/lodash"},"versions":["4.17.20"]}],
+					"published":"2021-02-15T00:00:00Z","modified":"2023-01-01T00:00:00Z","withdrawn":"2024-01-01T00:00:00Z",
+					"database_specific":{"severity":"HIGH","cwe_ids":["CWE-77"]},
+					"affected":[{"package":{"ecosystem":"npm","name":"lodash","purl":"pkg:npm/lodash"},"severity":[{"type":"CVSS_V3","score":"CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H"}],"versions":["4.17.20"]}],
 					"references":[{"type":"ADVISORY","url":"https://nvd.nist.gov/vuln/detail/CVE-2021-23337"}]
 				}],"next_page_token":"page-2"}`))
 				return
@@ -75,20 +75,14 @@ func TestQueryPaginationAndStubHydration(t *testing.T) {
 			}
 		case r.Method == http.MethodGet && r.URL.Path == vulnsEndpointPrefix+"MAL-2026-0001":
 			vulnEndpointCalled = true
-			_, _ = w.Write([]byte(`{
-				"schema_version":"1.6.0","id":"MAL-2026-0001",
-				"summary":"Malicious code in package","details":"Exfiltrates environment variables on install.",
-				"aliases":["GHSA-malw-0001-0001"]
-			}`))
+			_, _ = w.Write([]byte(`{"schema_version":"1.6.0","id":"MAL-2026-0001","summary":"Malicious code in package","details":"Exfiltrates environment variables on install.","aliases":["GHSA-malw-0001-0001"]}`))
 			return
 		}
 		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 
-	a := NewAdapter(Config{
-		BaseURL: srv.URL, RequireAuth: true, BearerToken: "test-mirror-token",
-	}, srv.Client())
+	a := NewAdapter(Config{BaseURL: srv.URL, RequireAuth: true, BearerToken: "test-mirror-token"}, srv.Client())
 
 	res, err := a.Evaluate(context.Background(), adapter.EvaluationRequest{
 		SubmissionID: "sub-1", ProviderRunID: "run-1",
@@ -105,10 +99,15 @@ func TestQueryPaginationAndStubHydration(t *testing.T) {
 		threatCheck.Status != adapter.CheckStatusEvaluated || len(threatCheck.Findings) != 1 {
 		t.Fatalf("unexpected check reports: vuln=%+v threat=%+v", vulnCheck, threatCheck)
 	}
+	if res.Report.ID != "report-run-1" || res.Report.ResponseMetadata[adapter.RespMetaKeyPageCount] != 2 ||
+		res.Report.ResponseMetadata[adapter.RespMetaKeyHydratedRecordCount] != 1 {
+		t.Fatalf("unexpected report provenance: id=%q meta=%+v", res.Report.ID, res.Report.ResponseMetadata)
+	}
 	vf, tf := vulnCheck.Findings[0], threatCheck.Findings[0]
 	if vf.ID != "GHSA-35jh-r3h4-6jhm" || vf.Severity != adapter.SeverityHigh || vf.Type != adapter.FindingTypeVulnerability ||
 		!slices.Equal(vf.Identifiers, []string{"GHSA-35jh-r3h4-6jhm", "CVE-2021-23337"}) ||
-		vf.Metadata[adapter.MetaKeyPublished] != "2021-02-15T00:00:00Z" || vf.Metadata[adapter.MetaKeyRelated] == nil {
+		vf.Metadata[adapter.MetaKeyPublished] != "2021-02-15T00:00:00Z" || vf.Metadata[adapter.MetaKeyWithdrawn] != "2024-01-01T00:00:00Z" ||
+		vf.Metadata[adapter.MetaKeyAliases] == nil || vf.Metadata[adapter.MetaKeyRelated] == nil || vf.Metadata[adapter.MetaKeySeverity] == nil {
 		t.Fatalf("unexpected vulnerability finding: %+v", vf)
 	}
 	if tf.ID != "MAL-2026-0001" || tf.Severity != adapter.SeverityCritical || tf.Type != adapter.FindingTypeMalware || len(res.RawProviderResponse) == 0 {
@@ -162,8 +161,9 @@ func TestOpenVSXAndGolangFallbackMapping(t *testing.T) {
 			Artifact:              adapter.ArtifactInput{PURL: purl},
 			RequestedCapabilities: []adapter.Capability{adapter.CapabilityThreats},
 		})
-		if err != nil || len(queries) < 2 || len(res.Report.Capabilities[adapter.CapabilityThreats].Checks[adapter.CheckMalware].Findings) != 1 {
-			t.Fatalf("%s: err=%v queries=%d", purl, err, len(queries))
+		if err != nil || len(queries) < 2 || len(res.Report.Capabilities[adapter.CapabilityThreats].Checks[adapter.CheckMalware].Findings) != 1 ||
+			res.Report.ResponseMetadata[adapter.RespMetaKeyFallbackEcosystem] != openVSXEcosystem {
+			t.Fatalf("%s: err=%v queries=%d meta=%+v", purl, err, len(queries), res.Report.ResponseMetadata)
 		}
 	}
 
