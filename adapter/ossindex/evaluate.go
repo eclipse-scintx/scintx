@@ -66,7 +66,8 @@ func (a *Adapter) Evaluate(ctx context.Context, req adapter.EvaluationRequest) (
 			AdapterVersion: AdapterVersion,
 			Capabilities:   capabilities,
 			ResponseMetadata: map[string]any{
-				adapter.RespMetaKeyEndpoint:          a.cfg.BaseURL,
+				// Redacted: the base URL may hold credentials (#98).
+				adapter.RespMetaKeyEndpoint:          adapter.RedactEndpoint(a.cfg.BaseURL),
 				adapter.RespMetaKeyQueriedCoordinate: queryCoord,
 				adapter.RespMetaKeyComponentCount:    len(reports),
 			},
