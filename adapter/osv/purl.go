@@ -87,6 +87,7 @@ func parseVSCodeExtensionPURL(purl string) (extName, version, ecosystem string, 
 		return "", "", "", false
 	}
 	coord, rawQuery := splitPURLCoordAndQuery(strings.TrimPrefix(purl, vscodeExtensionPURLPrefix))
+	// splitNameAndVersion already percent-decodes the "<publisher>/<name>" part.
 	namePart, ver, ok := splitNameAndVersion(coord)
 	if !ok {
 		return "", "", "", false
@@ -95,9 +96,7 @@ func parseVSCodeExtensionPURL(purl string) (extName, version, ecosystem string, 
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.Contains(parts[1], "/") {
 		return "", "", "", false
 	}
-	pub, _ := url.PathUnescape(parts[0])
-	name, _ := url.PathUnescape(parts[1])
-	return pub + "." + name, ver, resolveVSCodeEcosystem(rawQuery), true
+	return parts[0] + "." + parts[1], ver, resolveVSCodeEcosystem(rawQuery), true
 }
 
 // resolveVSCodeEcosystem maps the PURL spec's optional repository_url qualifier
@@ -167,16 +166,21 @@ func splitPURLCoordAndQuery(rest string) (coord, rawQuery string) {
 	return rest, ""
 }
 
+// splitNameAndVersion splits "<name>@<version>" and percent-decodes both parts.
+// The name must be decoded too. A canonical PURL encodes "+" as "%2B", so
+// "libstdc++" arrives as "libstdc%2B%2B". OSV stores the plain name, and an
+// encoded name never matches, which reported the package as clean (#96).
 func splitNameAndVersion(coord string) (name, version string, ok bool) {
 	at := strings.LastIndexByte(coord, '@')
 	if at <= 0 {
 		return "", "", false
 	}
-	ver, err := url.PathUnescape(coord[at+1:])
-	if err != nil || ver == "" {
+	name, nameErr := url.PathUnescape(coord[:at])
+	ver, verErr := url.PathUnescape(coord[at+1:])
+	if nameErr != nil || verErr != nil || name == "" || ver == "" {
 		return "", "", false
 	}
-	return coord[:at], ver, true
+	return name, ver, true
 }
 
 func extractQualifier(rawQuery, key string) string {
