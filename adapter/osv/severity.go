@@ -13,10 +13,14 @@ import (
 // This file extracts normalized SCINTX adapter.Severity values from OSV
 // advisory records using the shared adapter severity helpers (#94, #98).
 
+// metaKeyUrgency is used by Debian, Ubuntu, and Alpine OSV advisories under
+// affected[].ecosystem_specific to record qualitative urgency ratings.
+const metaKeyUrgency = "urgency"
+
 // extractSeverity maps an OSV record's severity fields to SCINTX Severity.
 // It checks MAL-* malware advisories first, then database_specific and
-// affected[].ecosystem_specific/database_specific labels, and finally numeric
-// CVSS base scores when present.
+// affected[].ecosystem_specific/database_specific labels (including Debian/Ubuntu
+// urgency), and finally CVSS scores/vectors in severity[].score.
 func extractSeverity(v Vulnerability) adapter.Severity {
 	if strings.HasPrefix(v.ID, malwareIDPrefix) {
 		return adapter.SeverityCritical
@@ -54,9 +58,12 @@ func severityFromMap(m map[string]any) (adapter.Severity, bool) {
 	if len(m) == 0 {
 		return "", false
 	}
-	raw, ok := m[adapter.MetaKeySeverity].(string)
-	if !ok {
-		return "", false
+	for _, key := range []string{adapter.MetaKeySeverity, metaKeyUrgency} {
+		if raw, ok := m[key].(string); ok {
+			if sev, parsed := adapter.ParseSeverityLabel(raw); parsed {
+				return sev, true
+			}
+		}
 	}
-	return adapter.ParseSeverityLabel(raw)
+	return "", false
 }

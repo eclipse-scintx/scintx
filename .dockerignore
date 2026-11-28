@@ -29,6 +29,10 @@
 #    The default configuration. It is copied into the image as /app/gateway.yaml.
 !gateway.yaml
 #    The Go packages that ./cmd/scintx is built from.
+#    adapter is a top-level package. cmd/scintx and internal/gateway import
+#    it. Leave it out and "docker build" fails with "no required module
+#    provides package .../adapter".
+!adapter
 !api
 !cmd
 !internal

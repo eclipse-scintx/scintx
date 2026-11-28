@@ -53,6 +53,12 @@ func TestEmptyResultAndSeverityExtraction(t *testing.T) {
 		{Vulnerability{ID: "OSV-6", Affected: []AffectedEntry{{Severity: []SeverityEntry{{Type: "CVSS_V3", Score: "2.1"}}}}}, adapter.SeverityLow},
 		{Vulnerability{ID: "OSV-7", Severity: []SeverityEntry{{Type: "CVSS_V3", Score: "0.0"}}}, adapter.SeverityInfo},
 		{Vulnerability{ID: "OSV-8", DatabaseSpecific: map[string]any{adapter.MetaKeySeverity: "NONE"}}, adapter.SeverityInfo},
+		{Vulnerability{ID: "DEBIAN-CVE-2021-3711", Severity: []SeverityEntry{{Type: "CVSS_V3", Score: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}}}, adapter.SeverityCritical},
+		{Vulnerability{ID: "DEBIAN-CVE-2021-3712", Severity: []SeverityEntry{{Type: "CVSS_V3", Score: "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:H"}}}, adapter.SeverityHigh},
+		{Vulnerability{ID: "DEBIAN-CVE-2021-4160", Severity: []SeverityEntry{{Type: "CVSS_V3", Score: "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N"}}}, adapter.SeverityMedium},
+		{Vulnerability{ID: "GHSA-3h9f-r86x-qvjx", Severity: []SeverityEntry{{Type: "CVSS_V3", Score: "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N"}}}, adapter.SeverityLow},
+		{Vulnerability{ID: "GHSA-3pxv-7cmr-fjr4", Severity: []SeverityEntry{{Type: "CVSS_V4", Score: "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:L/SA:N"}}}, adapter.SeverityMedium},
+		{Vulnerability{ID: "UBUNTU-1", Affected: []AffectedEntry{{EcosystemSpecific: map[string]any{"urgency": "unimportant"}}}}, adapter.SeverityInfo},
 		{Vulnerability{ID: "OSV-9"}, adapter.SeverityUnknown},
 	}
 	for _, tc := range cases {
