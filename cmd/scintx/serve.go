@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/eclipse-scintx/scintx/adapter"
+	"github.com/eclipse-scintx/scintx/adapter/ossindex"
 	"github.com/eclipse-scintx/scintx/adapter/osv"
 	"github.com/eclipse-scintx/scintx/internal/blob"
 	"github.com/eclipse-scintx/scintx/internal/config"
@@ -68,11 +70,24 @@ func runServe() error {
 		return fmt.Errorf("open blob storage %q: %w", cfg.Storage.BlobDir, err)
 	}
 
-	osvAdapter := osv.NewAdapter(osv.Config{
-		BaseURL:     os.Getenv("SCINTX_OSV_BASE_URL"),
-		BearerToken: os.Getenv("SCINTX_OSV_BEARER_TOKEN"),
-	}, nil)
-	orch := gateway.NewOrchestratorWithAdapters(cfg, store, blobs, osvAdapter)
+	adapters := []adapter.ProviderAdapter{
+		osv.NewAdapter(osv.Config{
+			BaseURL:     os.Getenv("SCINTX_OSV_BASE_URL"),
+			BearerToken: os.Getenv("SCINTX_OSV_BEARER_TOKEN"),
+		}, nil),
+	}
+	// Register the Sonatype Guide OSS Index Compatibility API adapter (#95) when
+	// OSS Index credentials or an explicit endpoint override are configured.
+	ossCfg := ossindex.Config{
+		BaseURL:  os.Getenv("SCINTX_OSSINDEX_BASE_URL"),
+		Username: os.Getenv("SCINTX_OSSINDEX_USERNAME"),
+		Token:    os.Getenv("SCINTX_OSSINDEX_TOKEN"),
+	}
+	if ossCfg.HasCredentials() || ossCfg.BaseURL != "" {
+		ossCfg.AllowAnonymous = !ossCfg.HasCredentials() && ossCfg.BaseURL != ""
+		adapters = append(adapters, ossindex.NewAdapter(ossCfg, nil))
+	}
+	orch := gateway.NewOrchestratorWithAdapters(cfg, store, blobs, adapters...)
 	srv := server.New(cfg, store, orch)
 	warnAboutRiskyDefaults(cfg, orch)
 

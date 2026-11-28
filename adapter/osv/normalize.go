@@ -49,28 +49,11 @@ func normalizeFinding(v Vulnerability, artifactPURL string, isMalware bool) adap
 // collectIdentifiers returns a deduplicated list of advisory identifiers
 // starting with the primary OSV ID followed by aliases and upstream IDs.
 func collectIdentifiers(v Vulnerability) []string {
-	seen := make(map[string]struct{}, 1+len(v.Aliases)+len(v.Upstream))
-	var out []string
-	add := func(id string) {
-		trimmed := strings.TrimSpace(id)
-		if trimmed == "" {
-			return
-		}
-		if _, exists := seen[trimmed]; exists {
-			return
-		}
-		seen[trimmed] = struct{}{}
-		out = append(out, trimmed)
-	}
-
-	add(v.ID)
-	for _, alias := range v.Aliases {
-		add(alias)
-	}
-	for _, up := range v.Upstream {
-		add(up)
-	}
-	return out
+	ids := make([]string, 0, 1+len(v.Aliases)+len(v.Upstream))
+	ids = append(ids, v.ID)
+	ids = append(ids, v.Aliases...)
+	ids = append(ids, v.Upstream...)
+	return adapter.DeduplicateStrings(ids...)
 }
 
 // buildFindingMetadata preserves OSV relationships, timestamps, severity

@@ -122,7 +122,7 @@ func AvailabilityFromHTTPStatus(providerName string, statusCode int) Availabilit
 	switch statusCode {
 	case http.StatusOK:
 		return NewReadyStatus()
-	case http.StatusUnauthorized, http.StatusForbidden:
+	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden:
 		return NewUnreachableStatus(
 			ReasonAuthenticationFailed,
 			fmt.Sprintf("%s API rejected credentials with HTTP %d", providerName, statusCode),
@@ -164,7 +164,7 @@ func ClassifyTransportError(providerName, endpoint string, err error) *AdapterEr
 // Evaluate to a structured *AdapterError (#74).
 func ClassifyHTTPStatusError(providerName, endpoint string, statusCode int) *AdapterError {
 	switch statusCode {
-	case http.StatusUnauthorized, http.StatusForbidden:
+	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden:
 		return &AdapterError{
 			Code:    ErrAuthFailed,
 			Message: fmt.Sprintf("%s authentication failed with HTTP %d", providerName, statusCode),

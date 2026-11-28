@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"sync"
 
 	"github.com/eclipse-scintx/scintx/adapter"
 	"github.com/eclipse-scintx/scintx/api"
@@ -41,54 +42,139 @@ func NewOrchestratorWithAdapters(
 	})
 }
 
-// evaluateAdapters runs all registered provider adapters that support the
-// submitted artifact's input type and attaches their normalized ProviderReport
-// outputs to sub.Reports.
+// evaluateAdapters selects all registered provider adapters that support the
+// submitted artifact's input type and ecosystem, runs them concurrently so
+// multi-provider evaluations bound latency by the slowest provider rather than
+// the sum of providers, and attaches their normalized ProviderReport outputs to
+// sub.Reports in deterministic registration order.
 func (o *Orchestrator) evaluateAdapters(ctx context.Context, sub *api.Submission) error {
 	artIn, inputType := o.prepareAdapterArtifact(sub)
-	matched := 0
-	reports := make([]json.RawMessage, 0, len(o.adapters))
+	matched := make([]adapter.ProviderAdapter, 0, len(o.adapters))
 
 	for _, prov := range o.adapters {
 		desc := prov.Descriptor()
 		if !slices.Contains(desc.SupportedInputs.Types, inputType) {
 			continue
 		}
-		matched++
-
-		reqCaps := make([]adapter.Capability, 0, len(desc.Capabilities))
-		for capName := range desc.Capabilities {
-			reqCaps = append(reqCaps, capName)
-		}
-		slices.Sort(reqCaps)
-
-		res, err := prov.Evaluate(ctx, adapter.EvaluationRequest{
-			SubmissionID:          sub.ID,
-			ProviderRunID:         fmt.Sprintf("%s-%s-%d", sub.ID, desc.Slug, sub.Attempts),
-			Artifact:              artIn,
-			RequestedCapabilities: reqCaps,
-		})
-		if err != nil {
-			var ae *adapter.AdapterError
-			if errors.As(err, &ae) && ae.Retryable {
-				return fmt.Errorf("%w: %w", ErrRetryable, err)
+		if inputType == adapter.InputTypePURL && len(desc.SupportedInputs.Ecosystems) > 0 {
+			if purlType, pErr := api.PurlType(artIn.PURL); pErr == nil {
+				if !slices.Contains(desc.SupportedInputs.Ecosystems, adapter.Ecosystem(purlType)) {
+					continue
+				}
 			}
-			return err
 		}
-		if res != nil {
-			raw, mErr := json.Marshal(res.Report)
-			if mErr != nil {
-				return mErr
-			}
-			reports = append(reports, json.RawMessage(raw))
-		}
+		matched = append(matched, prov)
 	}
 
-	if matched == 0 {
+	if len(matched) == 0 {
+		// Record provenance for every registered adapter explaining that none
+		// supported the submitted artifact input before failing closed (#98).
+		unmatchedErr := &adapter.AdapterError{
+			Code:    adapter.ErrUnsupportedInput,
+			Message: fmt.Sprintf("adapter does not support %s artifacts", inputType),
+		}
+		sub.Reports = make([]json.RawMessage, 0, len(o.adapters))
+		for _, prov := range o.adapters {
+			desc := prov.Descriptor()
+			runID := fmt.Sprintf("%s-%s-%d", sub.ID, desc.Slug, sub.Attempts)
+			if raw, mErr := json.Marshal(adapter.NewErroredProviderReport(desc, runID, unmatchedErr)); mErr == nil {
+				sub.Reports = append(sub.Reports, json.RawMessage(raw))
+			}
+		}
 		return fmt.Errorf("no configured provider adapter supports %s artifacts", inputType)
 	}
-	sub.Reports = reports
-	return nil
+
+	rawReports := make([]json.RawMessage, len(matched))
+	errs := make([]error, len(matched))
+	panics := make([]any, len(matched))
+	var wg sync.WaitGroup
+	wg.Add(len(matched))
+
+	for i, prov := range matched {
+		go func(idx int, p adapter.ProviderAdapter) {
+			defer wg.Done()
+			desc := p.Descriptor()
+			runID := fmt.Sprintf("%s-%s-%d", sub.ID, desc.Slug, sub.Attempts)
+			// Catch panics inside the child goroutine, record an errored
+			// ProviderReport so provenance is preserved even on a panic, and
+			// re-raise on the worker goroutine after wg.Wait().
+			defer func() {
+				if r := recover(); r != nil {
+					panics[idx] = r
+					if raw, mErr := json.Marshal(adapter.NewErroredProviderReport(desc, runID, nil)); mErr == nil {
+						rawReports[idx] = json.RawMessage(raw)
+					}
+				}
+			}()
+			reqCaps := make([]adapter.Capability, 0, len(desc.Capabilities))
+			for capName := range desc.Capabilities {
+				reqCaps = append(reqCaps, capName)
+			}
+			slices.Sort(reqCaps)
+
+			res, err := p.Evaluate(ctx, adapter.EvaluationRequest{
+				SubmissionID: sub.ID, ProviderRunID: runID,
+				Artifact: artIn, RequestedCapabilities: reqCaps,
+			})
+			if err != nil {
+				if raw, mErr := json.Marshal(adapter.NewErroredProviderReport(desc, runID, err)); mErr == nil {
+					rawReports[idx] = json.RawMessage(raw)
+				}
+				var ae *adapter.AdapterError
+				if errors.As(err, &ae) && ae.Retryable {
+					errs[idx] = fmt.Errorf("%w: %w", ErrRetryable, err)
+					return
+				}
+				errs[idx] = err
+				return
+			}
+			if res != nil {
+				if raw, mErr := json.Marshal(res.Report); mErr == nil {
+					rawReports[idx] = json.RawMessage(raw)
+				} else {
+					errs[idx] = mErr
+				}
+			}
+		}(i, prov)
+	}
+	wg.Wait()
+
+	// Always attach all completed and errored ProviderReports to sub.Reports
+	// before re-panicking or returning an error so provenance is preserved on
+	// every failure and retry path (#98).
+	sub.Reports = slices.DeleteFunc(rawReports, func(r json.RawMessage) bool { return len(r) == 0 })
+	for _, p := range panics {
+		if p != nil {
+			panic(p)
+		}
+	}
+	return selectAdapterError(errs)
+}
+
+// selectAdapterError picks the highest-priority error across concurrent adapter
+// runs: ErrStaleAttempt first (lease fencing), then any permanent non-retryable
+// error (so a permanent failure in one provider never wastes retry attempts),
+// and finally the first retryable error.
+func selectAdapterError(errs []error) error {
+	var firstRetryable error
+	var firstNonRetryable error
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, ErrStaleAttempt) {
+			return err
+		}
+		if !errors.Is(err, ErrRetryable) && firstNonRetryable == nil {
+			firstNonRetryable = err
+		} else if firstRetryable == nil {
+			firstRetryable = err
+		}
+	}
+	if firstNonRetryable != nil {
+		return firstNonRetryable
+	}
+	return firstRetryable
 }
 
 // prepareAdapterArtifact attaches OpenContent when ContentMeta is present and

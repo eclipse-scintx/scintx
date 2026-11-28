@@ -103,6 +103,13 @@ func (o *Orchestrator) scheduleRetry(sub api.Submission, cause error) {
 	log.Warn("attempt failed with a retryable error; retrying after backoff", "retryIn", delay.String(), "error", cause)
 	ctx, cancel := finalWriteContext()
 	defer cancel()
+	// Persist any provider provenance reports captured during this attempt so
+	// they remain visible during backoff or if maxAttempts is later exhausted.
+	if len(sub.Reports) > 0 {
+		if err := o.store.PutSubmission(ctx, sub); err != nil && !errors.Is(err, ErrStaleAttempt) {
+			log.Warn("saving provenance reports before retry failed", "error", err)
+		}
+	}
 	if err := o.store.DelayRetry(ctx, sub.ID, sub.Attempts, time.Now(), delay); err != nil {
 		// Nothing more to do. The current lease still runs out by itself.
 		log.Error("scheduling the retry failed; it will run when the current lease expires", "error", err)

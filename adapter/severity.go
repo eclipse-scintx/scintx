@@ -10,9 +10,10 @@ import (
 	"strings"
 )
 
-// This file provides shared severity normalization helpers so all provider
-// adapters map upstream severity labels, numeric CVSS base scores (0.0–10.0),
-// and CVSS v3/v4 vector strings onto the standardized SCINTX Severity scale (#72, #98).
+// This file provides shared severity normalization and string deduplication
+// helpers so all provider adapters map upstream severity labels, numeric CVSS
+// base scores (0.0–10.0), and CVSS v3/v4 vector strings onto the standardized
+// SCINTX Severity scale (#72, #98).
 
 // ParseSeverityLabel maps common upstream severity and Linux distribution
 // urgency strings ("CRITICAL", "HIGH", "MODERATE", "MEDIUM", "LOW",
@@ -72,6 +73,25 @@ func SeverityFromCVSSFloat(val float64) (Severity, bool) {
 	}
 }
 
+// DeduplicateStrings trims whitespace from each entry, drops empty strings,
+// and returns a slice containing the unique values in first-seen order (#98).
+func DeduplicateStrings(values ...string) []string {
+	seen := make(map[string]struct{}, len(values))
+	var out []string
+	for _, raw := range values {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
 // cvssV3BaseScore computes the standard FIRST.org CVSS v3.0/v3.1 base score
 // from a vector string (e.g. "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H").
 func cvssV3BaseScore(vector string) (float64, bool) {
@@ -125,7 +145,6 @@ func cvssV3BaseScore(vector string) (float64, bool) {
 	if raw > 10.0 {
 		raw = 10.0
 	}
-	// CVSS v3 roundUp rounds up to 1 decimal place with 1e-5 precision tolerance.
 	return math.Ceil(math.Round(raw*100000.0)/10000.0) / 10.0, true
 }
 
